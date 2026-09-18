@@ -1,9 +1,10 @@
 """ORM models.
 
-A `Word` is what the learner adds; each word yields several `Card`s (one per
-exercise type, plus one cloze card per example that marks a target form). FSRS
-scheduling state lives on the card, and every answer is kept in `ReviewLog` so
-the FSRS parameters can later be optimized on the learner's own history.
+The dictionary (`Word`, `Example`) is shared by every learner. Each learner
+gets their own `Card`s per word (one per exercise type, plus one cloze card per
+example that marks a target form). FSRS scheduling state lives on the card, and
+every answer is kept in `ReviewLog` so the FSRS parameters can later be
+optimized on the learner's own history.
 """
 
 from __future__ import annotations
@@ -54,25 +55,20 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    words: Mapped[list[Word]] = relationship(back_populates="user")
-
 
 class Word(Base):
     __tablename__ = "words"
-    __table_args__ = (UniqueConstraint("user_id", "lemma_key"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     lemma: Mapped[str] = mapped_column(String(200))
     # Accent- and case-insensitive form, so "ξερω" and "Ξέρω" are one word.
-    lemma_key: Mapped[str] = mapped_column(String(200))
+    lemma_key: Mapped[str] = mapped_column(String(200), unique=True)
     translation: Mapped[str] = mapped_column(String(500))
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    user: Mapped[User] = relationship(back_populates="words")
     examples: Mapped[list[Example]] = relationship(
         back_populates="word", cascade="all, delete-orphan", order_by="Example.id"
     )
@@ -98,21 +94,27 @@ class Example(Base):
 class Card(Base):
     __tablename__ = "cards"
     __table_args__ = (
-        # NULLS NOT DISTINCT: a word has exactly one recognition and one recall card.
+        # NULLS NOT DISTINCT: a learner has exactly one recognition and one
+        # recall card per word.
         UniqueConstraint(
-            "word_id", "card_type", "example_id", postgresql_nulls_not_distinct=True
+            "user_id",
+            "word_id",
+            "card_type",
+            "example_id",
+            postgresql_nulls_not_distinct=True,
         ),
         CheckConstraint(
             "(card_type = 'cloze') = (example_id IS NOT NULL)",
             name="cloze_has_example",
         ),
         CheckConstraint("state IN (1, 2, 3)", name="fsrs_state"),
-        Index("ix_cards_due", "due"),
+        Index("ix_cards_user_id_due", "user_id", "due"),
         Index("ix_cards_word_id", "word_id"),
         Index("ix_cards_example_id", "example_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     word_id: Mapped[int] = mapped_column(ForeignKey("words.id", ondelete="CASCADE"))
     card_type: Mapped[CardType] = mapped_column(
         Enum(CardType, name="card_type", values_callable=lambda e: [m.value for m in e])

@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import fsrs
-from sqlalchemy import case, exists, func, select
+from sqlalchemy import case, except_, exists, func, literal, select, union_all
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -39,26 +40,58 @@ async def get_or_create_user(
     return user
 
 
-def _new_card(
-    card_type: CardType, now: datetime, example: Example | None = None
-) -> Card:
-    card = Card(card_type=card_type, example=example, version=0)
-    apply_fsrs(card, new_fsrs_card(now))
-    return card
+async def deal_missing_cards(session: AsyncSession, user: User, now: datetime) -> None:
+    """Create the learner's cards for every dictionary word they don't have yet.
+
+    Runs on each of the learner's updates instead of when a word is added: a word
+    and a user created in concurrent transactions don't see each other, and this
+    way they still meet on the learner's next message.
+    """
+    card_type = Card.__table__.c.card_type.type
+    no_example = literal(None, Card.__table__.c.example_id.type)
+    wanted = union_all(
+        *(
+            select(Word.id, literal(kind, card_type), no_example)
+            for kind in (CardType.RECOGNITION, CardType.RECALL)
+        ),
+        select(Example.word_id, literal(CardType.CLOZE, card_type), Example.id).where(
+            Example.cloze_target.is_not(None)
+        ),
+    )
+    owned = select(Card.word_id, Card.card_type, Card.example_id).where(
+        Card.user_id == user.id
+    )
+    missing = except_(wanted, owned).subquery()
+
+    fresh = Card()
+    apply_fsrs(fresh, new_fsrs_card(now))
+    fsrs_columns = ["state", "step", "stability", "difficulty", "due", "last_review"]
+    rows = select(
+        literal(user.id),
+        *missing.c,
+        *(literal(getattr(fresh, c), Card.__table__.c[c].type) for c in fsrs_columns),
+        literal(0),
+    ).order_by(*missing.c)  # next_card breaks ties by id: recognition before recall
+    columns = ["user_id", "word_id", "card_type", "example_id", *fsrs_columns]
+    # DO NOTHING: two concurrent updates of one learner may deal the same cards.
+    await session.execute(
+        insert(Card).from_select([*columns, "version"], rows).on_conflict_do_nothing()
+    )
 
 
-async def add_word(
-    session: AsyncSession, user: User, draft: WordDraft, now: datetime
-) -> Word:
-    """Store a word with its examples and create its cards.
+async def add_word(session: AsyncSession, draft: WordDraft) -> Word:
+    """Store a word with its examples in the shared dictionary.
+
+    Learners get its cards from `deal_missing_cards`.
 
     Raises:
-        DuplicateWordError: the learner already has this word.
+        DuplicateWordError: the dictionary already has this word.
     """
     key = lemma_key(draft.lemma)
-    duplicate = await session.scalar(
-        select(Word.id).where(Word.user_id == user.id, Word.lemma_key == key)
-    )
+    # Serializes concurrent adds of one word, so the second sees the first and
+    # gets a DuplicateWordError instead of a unique violation.
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtext(key))))
+    duplicate = await session.scalar(select(Word.id).where(Word.lemma_key == key))
     if duplicate is not None:
         raise DuplicateWordError(f"Слово «{draft.lemma}» уже есть в словаре.")
 
@@ -66,16 +99,12 @@ async def add_word(
         Example(text_el=e.text_el, text_ru=e.text_ru, cloze_target=e.cloze_target)
         for e in draft.examples
     ]
-    cards = [_new_card(CardType.RECOGNITION, now), _new_card(CardType.RECALL, now)]
-    cards += [_new_card(CardType.CLOZE, now, e) for e in examples if e.cloze_target]
     word = Word(
-        user_id=user.id,
         lemma=draft.lemma,
         lemma_key=key,
         translation=draft.translation,
         notes=draft.notes,
         examples=examples,
-        cards=cards,
     )
     session.add(word)
     await session.flush()
@@ -87,9 +116,8 @@ async def _new_cards_started(session: AsyncSession, user: User, since: datetime)
         select(func.count())
         .select_from(ReviewLog)
         .join(Card, Card.id == ReviewLog.card_id)
-        .join(Word, Word.id == Card.word_id)
         .where(
-            Word.user_id == user.id,
+            Card.user_id == user.id,
             ReviewLog.state_before.is_(None),
             ReviewLog.reviewed_at >= since,
         )
@@ -111,6 +139,7 @@ async def next_card(session: AsyncSession, user: User, now: datetime) -> Card | 
         select(ReviewLog.id)
         .join(sibling, sibling.id == ReviewLog.card_id)
         .where(
+            sibling.user_id == Card.user_id,
             sibling.word_id == Card.word_id,
             sibling.id != Card.id,
             ReviewLog.reviewed_at >= day_start,
@@ -119,8 +148,7 @@ async def next_card(session: AsyncSession, user: User, now: datetime) -> Card | 
     is_new = Card.last_review.is_(None)
     stmt = (
         select(Card)
-        .join(Word, Word.id == Card.word_id)
-        .where(Word.user_id == user.id, Card.due <= now, ~sibling_reviewed_today)
+        .where(Card.user_id == user.id, Card.due <= now, ~sibling_reviewed_today)
         .options(selectinload(Card.word).selectinload(Word.examples))
         .options(selectinload(Card.example))
         .order_by(
@@ -141,10 +169,8 @@ async def next_card(session: AsyncSession, user: User, now: datetime) -> Card | 
 
 
 async def next_due_at(session: AsyncSession, user: User) -> datetime | None:
-    stmt = (
-        select(func.min(Card.due))
-        .join(Word, Word.id == Card.word_id)
-        .where(Word.user_id == user.id, Card.last_review.is_not(None))
+    stmt = select(func.min(Card.due)).where(
+        Card.user_id == user.id, Card.last_review.is_not(None)
     )
     return await session.scalar(stmt)
 
@@ -153,8 +179,7 @@ async def due_count(session: AsyncSession, user: User, now: datetime) -> int:
     stmt = (
         select(func.count())
         .select_from(Card)
-        .join(Word, Word.id == Card.word_id)
-        .where(Word.user_id == user.id, Card.due <= now, Card.last_review.is_not(None))
+        .where(Card.user_id == user.id, Card.due <= now, Card.last_review.is_not(None))
     )
     return (await session.scalar(stmt)) or 0
 
@@ -162,8 +187,7 @@ async def due_count(session: AsyncSession, user: User, now: datetime) -> int:
 async def get_card(session: AsyncSession, user: User, card_id: int) -> Card | None:
     stmt = (
         select(Card)
-        .join(Word, Word.id == Card.word_id)
-        .where(Card.id == card_id, Word.user_id == user.id)
+        .where(Card.id == card_id, Card.user_id == user.id)
         .options(selectinload(Card.word).selectinload(Word.examples))
         .options(selectinload(Card.example))
     )
@@ -207,14 +231,8 @@ class Stats:
 
 async def get_stats(session: AsyncSession, user: User, now: datetime) -> Stats:
     day_start = learning_day_start(now, user.timezone)
-    user_cards = (
-        select(Card.id)
-        .join(Word, Word.id == Card.word_id)
-        .where(Word.user_id == user.id)
-    ).subquery()
-    words = await session.scalar(
-        select(func.count()).select_from(Word).where(Word.user_id == user.id)
-    )
+    user_cards = select(Card.id).where(Card.user_id == user.id).subquery()
+    words = await session.scalar(select(func.count()).select_from(Word))
     cards = await session.scalar(select(func.count()).select_from(user_cards))
     new_cards = await session.scalar(
         select(func.count())

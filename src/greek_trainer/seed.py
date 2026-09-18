@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 from greek_trainer.config import load_settings
 from greek_trainer.db.session import create_engine, create_session_factory
 from greek_trainer.domain.word_input import parse_words
 from greek_trainer.errors import DuplicateWordError
-from greek_trainer.services import add_word, get_or_create_user
+from greek_trainer.services import add_word
 
 
 async def seed(path: Path) -> None:
@@ -24,17 +23,14 @@ async def seed(path: Path) -> None:
     drafts = parse_words(path.read_text(encoding="utf-8"))
     try:
         async with session_factory() as session, session.begin():
-            user = await get_or_create_user(
-                session, settings.owner_telegram_id, settings
-            )
             for draft in drafts:
                 try:
                     async with session.begin_nested():
-                        word = await add_word(session, user, draft, datetime.now(UTC))
+                        word = await add_word(session, draft)
                 except DuplicateWordError:
                     print(f"skip  {draft.lemma} (already added)")
                     continue
-                print(f"added {word.lemma}: {len(word.cards)} cards")
+                print(f"added {word.lemma}")
     finally:
         await engine.dispose()
 

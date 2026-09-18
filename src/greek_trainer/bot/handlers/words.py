@@ -12,7 +12,7 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.bot.render import next_card_keyboard, stats_text, word_text
-from greek_trainer.db.models import CardType, User
+from greek_trainer.db.models import User
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.errors import AppError
 from greek_trainer.services import add_word, get_stats
@@ -72,14 +72,14 @@ async def add_from_state(
 async def _add(message: Message, text: str, session: AsyncSession, user: User) -> None:
     try:
         async with session.begin_nested():
-            word = await add_word(session, user, parse_word(text), datetime.now(UTC))
+            word = await add_word(session, parse_word(text))
     except AppError as err:
         await message.answer(f"⚠️ {err}")
         return
-    cloze = sum(card.card_type is CardType.CLOZE for card in word.cards)
+    cloze = sum(example.cloze_target is not None for example in word.examples)
     await message.answer(
         f"Добавлено:\n\n{word_text(word)}\n\n"
-        f"Карточек: {len(word.cards)} (узнавание, вспоминание"
+        f"Карточек: {2 + cloze} (узнавание, вспоминание"
         f"{f', пропуски в примерах: {cloze}' if cloze else ''}).",
         reply_markup=next_card_keyboard("Начать повторение"),
     )

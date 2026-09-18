@@ -11,7 +11,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 
 from greek_trainer.bot.handlers import review, words
-from greek_trainer.bot.middlewares import DbSessionMiddleware, OwnerOnlyMiddleware
+from greek_trainer.bot.middlewares import AllowedUsersMiddleware, DbSessionMiddleware
 from greek_trainer.bot.reminders import run_reminders
 from greek_trainer.config import load_settings
 from greek_trainer.db.session import create_engine, create_session_factory
@@ -39,14 +39,16 @@ async def main() -> None:
     dp = Dispatcher(
         settings=settings, fsrs_scheduler=build_scheduler(settings.desired_retention)
     )
-    dp.update.outer_middleware(OwnerOnlyMiddleware(settings.owner_telegram_id))
+    dp.update.outer_middleware(AllowedUsersMiddleware(settings.allowed_telegram_ids))
     dp.update.middleware(DbSessionMiddleware(session_factory, settings))
     dp.include_routers(words.router, review.router)
 
     reminders: asyncio.Task[None] | None = None
     try:
         await bot.set_my_commands(COMMANDS)
-        reminders = asyncio.create_task(run_reminders(bot, session_factory))
+        reminders = asyncio.create_task(
+            run_reminders(bot, session_factory, settings.allowed_telegram_ids)
+        )
         await dp.start_polling(bot)
     finally:
         if reminders is not None:

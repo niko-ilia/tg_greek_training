@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from aiogram import BaseMiddleware
@@ -9,22 +10,22 @@ from aiogram.types import User as TelegramUser
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from greek_trainer.config import Settings
-from greek_trainer.services import get_or_create_user
+from greek_trainer.services import deal_missing_cards, get_or_create_user
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
 
-class OwnerOnlyMiddleware(BaseMiddleware):
-    """Personal bot: updates from anyone but the owner are dropped silently."""
+class AllowedUsersMiddleware(BaseMiddleware):
+    """Private bot: updates from anyone outside the allowlist are dropped silently."""
 
-    def __init__(self, owner_telegram_id: int) -> None:
-        self.owner_telegram_id = owner_telegram_id
+    def __init__(self, allowed_telegram_ids: frozenset[int]) -> None:
+        self.allowed_telegram_ids = allowed_telegram_ids
 
     async def __call__(
         self, handler: Handler, event: TelegramObject, data: dict[str, Any]
     ) -> Any:
         sender: TelegramUser | None = data.get("event_from_user")
-        if sender is None or sender.id != self.owner_telegram_id:
+        if sender is None or sender.id not in self.allowed_telegram_ids:
             return None
         return await handler(event, data)
 
@@ -44,5 +45,7 @@ class DbSessionMiddleware(BaseMiddleware):
         sender: TelegramUser = data["event_from_user"]
         async with self.session_factory() as session, session.begin():
             data["session"] = session
-            data["user"] = await get_or_create_user(session, sender.id, self.settings)
+            user = await get_or_create_user(session, sender.id, self.settings)
+            await deal_missing_cards(session, user, datetime.now(UTC))
+            data["user"] = user
             return await handler(event, data)
