@@ -1,0 +1,137 @@
+"""initial schema
+
+Revision ID: 0001
+Revises:
+Create Date: 2026-09-18 19:52:45.945578
+
+"""
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "0001"
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "tts_cache",
+        sa.Column("voice", sa.String(length=64), nullable=False),
+        sa.Column("text", sa.Text(), nullable=False),
+        sa.Column("telegram_file_id", sa.String(length=255), nullable=False),
+        sa.PrimaryKeyConstraint("voice", "text"),
+    )
+    op.create_table(
+        "users",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("telegram_id", sa.BigInteger(), nullable=False),
+        sa.Column("timezone", sa.String(length=64), nullable=False),
+        sa.Column("reminder_time", sa.Time(), nullable=True),
+        sa.Column("daily_new_cards", sa.Integer(), nullable=False),
+        sa.Column("last_reminded_on", sa.Date(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("telegram_id"),
+    )
+    op.create_table(
+        "words",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("user_id", sa.Integer(), nullable=False),
+        sa.Column("lemma", sa.String(length=200), nullable=False),
+        sa.Column("lemma_key", sa.String(length=200), nullable=False),
+        sa.Column("translation", sa.String(length=500), nullable=False),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("user_id", "lemma_key"),
+    )
+    op.create_table(
+        "examples",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("word_id", sa.Integer(), nullable=False),
+        sa.Column("text_el", sa.Text(), nullable=False),
+        sa.Column("text_ru", sa.Text(), nullable=False),
+        sa.Column("cloze_target", sa.String(length=200), nullable=True),
+        sa.ForeignKeyConstraint(["word_id"], ["words.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index("ix_examples_word_id", "examples", ["word_id"], unique=False)
+    op.create_table(
+        "cards",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("word_id", sa.Integer(), nullable=False),
+        sa.Column(
+            "card_type",
+            sa.Enum("recognition", "recall", "cloze", name="card_type"),
+            nullable=False,
+        ),
+        sa.Column("example_id", sa.Integer(), nullable=True),
+        sa.Column("state", sa.SmallInteger(), nullable=False),
+        sa.Column("step", sa.SmallInteger(), nullable=True),
+        sa.Column("stability", sa.Float(), nullable=True),
+        sa.Column("difficulty", sa.Float(), nullable=True),
+        sa.Column("due", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("last_review", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("version", sa.Integer(), nullable=False),
+        sa.CheckConstraint(
+            "(card_type = 'cloze') = (example_id IS NOT NULL)", name="cloze_has_example"
+        ),
+        sa.CheckConstraint("state IN (1, 2, 3)", name="fsrs_state"),
+        sa.ForeignKeyConstraint(["example_id"], ["examples.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["word_id"], ["words.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "word_id", "card_type", "example_id", postgresql_nulls_not_distinct=True
+        ),
+    )
+    op.create_index("ix_cards_due", "cards", ["due"], unique=False)
+    op.create_index("ix_cards_example_id", "cards", ["example_id"], unique=False)
+    op.create_index("ix_cards_word_id", "cards", ["word_id"], unique=False)
+    op.create_table(
+        "review_logs",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("card_id", sa.Integer(), nullable=False),
+        sa.Column("rating", sa.SmallInteger(), nullable=False),
+        sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("review_duration_ms", sa.Integer(), nullable=True),
+        sa.Column("state_before", sa.SmallInteger(), nullable=True),
+        sa.Column("answer_text", sa.Text(), nullable=True),
+        sa.CheckConstraint("rating BETWEEN 1 AND 4", name="fsrs_rating"),
+        sa.ForeignKeyConstraint(["card_id"], ["cards.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index("ix_review_logs_card_id", "review_logs", ["card_id"], unique=False)
+    op.create_index(
+        "ix_review_logs_reviewed_at", "review_logs", ["reviewed_at"], unique=False
+    )
+
+
+def downgrade() -> None:
+    op.drop_index("ix_review_logs_reviewed_at", table_name="review_logs")
+    op.drop_index("ix_review_logs_card_id", table_name="review_logs")
+    op.drop_table("review_logs")
+    op.drop_index("ix_cards_word_id", table_name="cards")
+    op.drop_index("ix_cards_example_id", table_name="cards")
+    op.drop_index("ix_cards_due", table_name="cards")
+    op.drop_table("cards")
+    op.drop_index("ix_examples_word_id", table_name="examples")
+    op.drop_table("examples")
+    op.drop_table("words")
+    op.drop_table("users")
+    op.drop_table("tts_cache")
+    sa.Enum(name="card_type").drop(op.get_bind())
