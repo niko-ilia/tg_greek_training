@@ -18,7 +18,7 @@ class SettingsChange:
 def parse_settings(args: str) -> SettingsChange:
     change = SettingsChange()
     for token in args.split():
-        if token.isdigit():
+        if token.isdecimal():
             limit = int(token)
             if not 1 <= limit <= 100:
                 raise ParseError("Новых карточек в день: от 1 до 100.")

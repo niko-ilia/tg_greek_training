@@ -18,3 +18,5 @@ def test_off_and_limits() -> None:
         parse_settings("0")
     with pytest.raises(ParseError):
         parse_settings("25:00")
+    with pytest.raises(ParseError):
+        parse_settings("²")
