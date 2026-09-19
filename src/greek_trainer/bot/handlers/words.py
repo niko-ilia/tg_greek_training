@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -68,7 +69,7 @@ async def add_command(
     await message.answer("Пришли слово в формате из /help.")
 
 
-@router.message(AddWord.waiting_for_word, F.text)
+@router.message(AddWord.waiting_for_word, F.text, ~F.text.startswith("/"))
 async def add_from_state(
     message: Message, state: FSMContext, session: AsyncSession, user: User
 ) -> None:
@@ -107,6 +108,10 @@ async def settings(message: Message, command: CommandObject, user: User) -> None
             user.reminder_time = None
         elif change.reminder_time is not None:
             user.reminder_time = change.reminder_time
+            local = datetime.now(ZoneInfo(user.timezone))
+            # A time already past today would fire within a minute; start tomorrow.
+            if change.reminder_time <= local.time():
+                user.last_reminded_on = local.date()
     await message.answer(settings_text(user))
 
 

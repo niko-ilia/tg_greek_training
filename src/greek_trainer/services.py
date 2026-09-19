@@ -6,7 +6,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import fsrs
-from sqlalchemy import case, except_, exists, func, literal, select, union_all
+from sqlalchemy import (
+    case,
+    except_,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    union_all,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
@@ -225,8 +235,8 @@ def record_review(
 async def next_unchecked_word(session: AsyncSession, user: User) -> Word | None:
     """Next word the learner has never reviewed, for /check.
 
-    Continues after `check_cursor`, so words skipped with "learn" are not shown
-    again until the cursor is reset.
+    Continues after `check_cursor`, so words answered with "know" or "learn"
+    are not shown again until the cursor is reset.
     """
     seen = exists(
         select(Card.id).where(
@@ -241,6 +251,27 @@ async def next_unchecked_word(session: AsyncSession, user: User) -> Word | None:
     return await session.scalar(stmt)
 
 
+async def advance_check(session: AsyncSession, user: User, word: Word) -> bool:
+    """Move the /check cursor past the word.
+
+    Returns False when the cursor is already there: a double tap or a stale
+    button. The conditional UPDATE makes two concurrent taps race safely.
+    """
+    moved = await session.scalar(
+        update(User)
+        .where(
+            User.id == user.id,
+            or_(User.check_cursor.is_(None), User.check_cursor < word.id),
+        )
+        .values(check_cursor=word.id)
+        .returning(User.id)
+    )
+    if moved is None:
+        return False
+    user.check_cursor = word.id
+    return True
+
+
 async def mark_word_known(
     session: AsyncSession,
     scheduler: fsrs.Scheduler,
@@ -248,25 +279,18 @@ async def mark_word_known(
     word: Word,
     now: datetime,
 ) -> bool:
-    """Rate every card of the word Easy, so it returns once as a check-up.
+    """Rate every card of the word Easy, so they return in about a week as a check-up.
 
-    Returns False when the learner already reviewed any card of the word.
+    Returns False when the word was already answered in /check.
     """
-    cards = list(
-        await session.scalars(
-            select(Card).where(Card.word_id == word.id, Card.user_id == user.id)
-        )
-    )
-    if any(card.last_review is not None for card in cards):
+    if not await advance_check(session, user, word):
         return False
+    cards = await session.scalars(
+        select(Card).where(Card.word_id == word.id, Card.user_id == user.id)
+    )
     for card in cards:
         record_review(session, scheduler, card, fsrs.Rating.Easy, now, is_triage=True)
-    advance_check(user, word)
     return True
-
-
-def advance_check(user: User, word: Word) -> None:
-    user.check_cursor = max(user.check_cursor or 0, word.id)
 
 
 @dataclass(frozen=True)
@@ -292,7 +316,9 @@ async def get_stats(session: AsyncSession, user: User, now: datetime) -> Stats:
     logs = select(ReviewLog).where(ReviewLog.card_id.in_(select(user_cards.c.id)))
     reviewed_today = await session.scalar(
         select(func.count()).select_from(
-            logs.where(ReviewLog.reviewed_at >= day_start).subquery()
+            logs.where(
+                ReviewLog.reviewed_at >= day_start, ReviewLog.is_triage.is_(False)
+            ).subquery()
         )
     )
     # Retention counts only answers on cards in the Review state, as FSRS defines it.

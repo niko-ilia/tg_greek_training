@@ -53,7 +53,7 @@ class User(Base):
     reminder_time: Mapped[time | None] = mapped_column(Time)
     daily_new_cards: Mapped[int] = mapped_column(Integer)
     last_reminded_on: Mapped[date | None] = mapped_column(Date)
-    # Last word id shown in /check; the next /check continues after it.
+    # Highest word id answered in /check ("know" or "learn"); the next pass continues after it.
     check_cursor: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

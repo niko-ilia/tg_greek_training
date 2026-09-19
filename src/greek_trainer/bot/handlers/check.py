@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import fsrs
 from aiogram import Bot, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -18,9 +19,22 @@ from greek_trainer.services import advance_check, mark_word_known, next_unchecke
 router = Router(name="check")
 
 INTRO = (
-    "Покажу слова, которые ты ещё не повторял. «Знаю» – слово вернётся один раз "
-    "примерно через неделю для проверки, «Учить» – пойдёт в обычное обучение."
+    "Покажу слова, которые ты ещё не повторял. «Знаю» – карточки слова вернутся "
+    "примерно через неделю для проверки, «Учить» – слово пойдёт в обычное обучение."
 )
+
+
+async def _edit(message: Message | None, text: str | None) -> None:
+    """Edit the prompt; a Telegram retry or a racing tap may have edited it already."""
+    if message is None:
+        return
+    try:
+        if text is None:
+            await message.edit_reply_markup(reply_markup=None)
+        else:
+            await message.edit_text(text)
+    except TelegramBadRequest:
+        pass
 
 
 async def show_next_unchecked(
@@ -54,8 +68,7 @@ async def check_callback(
     message = query.message if isinstance(query.message, Message) else None
     if callback_data.action == "stop":
         await query.answer()
-        if message is not None:
-            await message.edit_reply_markup(reply_markup=None)
+        await _edit(message, None)
         await bot.send_message(query.from_user.id, "Продолжить можно командой /check.")
         return
 
@@ -63,21 +76,17 @@ async def check_callback(
     if word is None:
         await query.answer("Слова уже нет.")
         return
+    now = datetime.now(UTC)
     if callback_data.action == "know":
-        if not await mark_word_known(
-            session, fsrs_scheduler, user, word, datetime.now(UTC)
-        ):
-            await query.answer("Уже отмечено.")
-            return
+        accepted = await mark_word_known(session, fsrs_scheduler, user, word, now)
         verdict = "✅ Знаю"
     else:
-        if user.check_cursor is not None and user.check_cursor >= word.id:
-            await query.answer("Уже отмечено.")
-            return
-        advance_check(user, word)
+        accepted = await advance_check(session, user, word)
         verdict = "📚 Учить"
+    if not accepted:
+        await query.answer("Уже отмечено.")
+        return
     await session.flush()
     await query.answer()
-    if message is not None:
-        await message.edit_text(f"{check_text(word)}\n{verdict}")
+    await _edit(message, f"{check_text(word)}\n{verdict}")
     await show_next_unchecked(bot, query.from_user.id, session, user)

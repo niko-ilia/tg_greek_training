@@ -11,6 +11,7 @@ from greek_trainer.services import (
     add_word,
     advance_check,
     deal_missing_cards,
+    get_stats,
     mark_word_known,
     next_card,
     next_unchecked_word,
@@ -45,8 +46,11 @@ async def test_check_walks_unseen_words_and_spares_the_daily_limit(
 
     second = await next_unchecked_word(session, user)
     assert second is not None and second.lemma == "όχι"
-    advance_check(user, second)
+    assert await advance_check(session, user, second)
+    assert not await advance_check(session, user, second)
+    assert not await mark_word_known(session, SCHEDULER, user, first, NOW)  # stale
     assert await next_unchecked_word(session, user) is None
+    assert (await get_stats(session, user, NOW)).reviewed_today == 0
 
     # Triage did not spend today's new-card budget: όχι still comes as new.
     card = await next_card(session, user, NOW)
