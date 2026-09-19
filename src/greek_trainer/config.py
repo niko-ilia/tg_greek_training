@@ -32,7 +32,8 @@ class Settings(DatabaseSettings):
     )
     timezone: str = "Europe/Nicosia"
     reminder_time: time = time(19, 0)
-    daily_new_cards: int = 20
+    daily_new_words: int = 30
+    daily_review_budget: int = 150
     desired_retention: float = 0.9
     tts_voice: str = "el-GR-AthinaNeural"
 

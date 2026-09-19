@@ -12,13 +12,14 @@ from greek_trainer.domain.word_input import parse_word
 from greek_trainer.errors import DuplicateWordError
 from greek_trainer.services import (
     LEARN_AHEAD,
+    STRUGGLE_AGAIN,
     add_word,
-    allow_more_new_cards,
     deal_missing_cards,
     get_or_create_user,
+    get_pace,
     get_stats,
-    new_card_allowance,
     next_card,
+    override_pace_today,
     record_review,
 )
 
@@ -102,8 +103,10 @@ async def test_siblings_are_buried_after_a_review(
     assert sibling is not None and sibling.card_type is not CardType.RECOGNITION
 
 
-async def test_daily_new_card_limit(session: AsyncSession, user: User) -> None:
-    user.daily_new_cards = 1
+async def test_daily_ceiling_counts_words_not_cards(
+    session: AsyncSession, user: User
+) -> None:
+    user.daily_new_words = 1
     await _add(session, user, "ναι\nда")
     await _add(session, user, "όχι\nнет")
 
@@ -113,7 +116,8 @@ async def test_daily_new_card_limit(session: AsyncSession, user: User) -> None:
     await session.flush()
 
     assert await next_card(session, user, NOW) is None
-    # New cards follow the order words were added: ναι's recall card goes first.
+    assert await next_card(session, user, NOW, ignore_pace=True) is not None
+    # Tomorrow ναι's second card is not a new word, so it is not held back by the ceiling.
     tomorrow = await next_card(session, user, NOW + timedelta(days=1))
     assert tomorrow is not None
     assert (tomorrow.word.lemma, tomorrow.card_type) == ("ναι", CardType.RECALL)
@@ -137,28 +141,54 @@ async def test_record_review_logs_and_bumps_version(
     assert stats.retention_30d is None
 
 
-async def test_more_new_cards_lifts_todays_limit_once_per_tap(
+async def test_override_lifts_the_brakes_for_today_only(
     session: AsyncSession, user: User
 ) -> None:
-    user.daily_new_cards = 1
-    await add_word(session, parse_word("ναι\nда"))
-    await add_word(session, parse_word("όχι\nнет"))
-    await deal_missing_cards(session, user, NOW)
+    user.daily_new_words = 1
+    await _add(session, user, "ναι\nда")
+    await _add(session, user, "όχι\nнет")
     first = await next_card(session, user, NOW)
     assert first is not None
     record_review(session, SCHEDULER, first, fsrs.Rating.Easy, NOW)
     await session.flush()
     assert await next_card(session, user, NOW) is None
-    assert await next_card(session, user, NOW, ignore_new_limit=True) is not None
 
-    assert await allow_more_new_cards(session, user, 0, NOW)
-    assert not await allow_more_new_cards(session, user, 0, NOW)  # double tap
+    assert await override_pace_today(session, user, NOW)
+    assert not await override_pace_today(session, user, NOW)  # double tap
     card = await next_card(session, user, NOW)
     assert card is not None and card.word.lemma == "όχι"
+    assert not (await get_pace(session, user, NOW + timedelta(days=1))).overridden
 
-    # The extra portion belongs to one learning day only.
-    tomorrow = NOW + timedelta(days=1)
-    assert new_card_allowance(user, (tomorrow).date()) == 1
+
+async def test_forgetting_pauses_new_words(session: AsyncSession, user: User) -> None:
+    for lemma in ("ένα", "δύο", "τρία", "τέσσερα"):
+        await _add(session, user, f"{lemma}\nчисло")
+    for _ in range(STRUGGLE_AGAIN):
+        card = await next_card(session, user, NOW)
+        assert card is not None and card.last_review is None
+        record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
+        await session.flush()
+
+    pace = await get_pace(session, user, NOW)
+    assert pace.struggling and not pace.allows_new_cards
+    # The forgotten cards themselves keep coming back: learning is never blocked.
+    again = await next_card(session, user, NOW + timedelta(minutes=2))
+    assert again is not None and again.last_review is not None
+
+
+async def test_a_heavy_week_ahead_pauses_new_words(
+    session: AsyncSession, user: User
+) -> None:
+    user.daily_review_budget = 1
+    await _add(session, user, "ναι\nда")
+    await _add(session, user, "όχι\nнет")
+    card = await next_card(session, user, NOW)
+    assert card is not None
+    record_review(session, SCHEDULER, card, fsrs.Rating.Good, NOW)
+    await session.flush()
+
+    pace = await get_pace(session, user, NOW)
+    assert pace.forecast_peak >= 1 and not pace.allows_new_cards
 
 
 async def test_a_learning_step_due_soon_is_shown_instead_of_waiting(

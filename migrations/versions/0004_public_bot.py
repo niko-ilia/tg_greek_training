@@ -1,4 +1,4 @@
-"""public bot: user profile, usage_events, extra new cards
+"""public bot: user profile, usage_events, rating-driven pace
 
 Revision ID: 0004
 Revises: 0003
@@ -24,10 +24,16 @@ _USER_COLUMNS = [
     sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("blocked_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column(
-        "extra_new_cards", sa.Integer(), server_default=sa.text("0"), nullable=False
+        "daily_review_budget",
+        sa.Integer(),
+        server_default=sa.text("150"),
+        nullable=False,
     ),
-    sa.Column("extra_new_cards_on", sa.Date(), nullable=True),
+    sa.Column("pace_override_on", sa.Date(), nullable=True),
 ]
+# The old limit counted cards; a word has 2-3 of them, so old values do not carry over.
+_DEFAULT_NEW_WORDS = 30
+_OLD_DEFAULT_NEW_CARDS = 20
 
 
 def upgrade() -> None:
@@ -49,9 +55,20 @@ def upgrade() -> None:
     )
     for column in _USER_COLUMNS:
         op.add_column("users", column)
+    op.alter_column(
+        "users", "daily_new_cards", new_column_name="daily_new_words", nullable=True
+    )
+    op.execute(f"UPDATE users SET daily_new_words = {_DEFAULT_NEW_WORDS}")
 
 
 def downgrade() -> None:
+    op.execute(
+        f"UPDATE users SET daily_new_words = {_OLD_DEFAULT_NEW_CARDS} "
+        "WHERE daily_new_words IS NULL"
+    )
+    op.alter_column(
+        "users", "daily_new_words", new_column_name="daily_new_cards", nullable=False
+    )
     for column in reversed(_USER_COLUMNS):
         op.drop_column("users", column.name)
     op.drop_index("ix_usage_events_user_id_occurred_at", table_name="usage_events")

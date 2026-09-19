@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.enums import ChatMemberStatus
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ChatMemberUpdated, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.bot.render import (
+    Setting,
     next_card_keyboard,
+    settings_keyboard,
     settings_text,
     stats_text,
     word_text,
@@ -24,7 +26,7 @@ from greek_trainer.db.models import User
 from greek_trainer.domain.settings_input import parse_settings
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.errors import AppError
-from greek_trainer.services import add_word, get_stats
+from greek_trainer.services import add_word, apply_settings, get_stats
 
 router = Router(name="words")
 
@@ -33,7 +35,7 @@ HELP = """<b>Γεια σου!</b> Я помогаю запоминать гре�
 /review – повторение (карточки по алгоритму FSRS)
 /check – быстро отметить слова, которые уже знаешь
 /stats – статистика
-/settings – лимит новых карточек и время напоминания"""
+/settings – темп новых слов, бюджет повторений, напоминание, часовой пояс"""
 
 ADMIN_HELP = """<b>Для администраторов</b>
 /add – добавить слово в общий словарь, оно появится у всех учеников.
@@ -124,17 +126,32 @@ async def settings(message: Message, command: CommandObject, user: User) -> None
         except AppError as err:
             await message.answer(f"⚠️ {err}")
             return
-        if change.daily_new_cards is not None:
-            user.daily_new_cards = change.daily_new_cards
-        if change.reminders_off:
-            user.reminder_time = None
-        elif change.reminder_time is not None:
-            user.reminder_time = change.reminder_time
-            local = datetime.now(ZoneInfo(user.timezone))
-            # A time already past today would fire within a minute; start tomorrow.
-            if change.reminder_time <= local.time():
-                user.last_reminded_on = local.date()
-    await message.answer(settings_text(user))
+        apply_settings(user, change, datetime.now(UTC))
+    await message.answer(settings_text(user), reply_markup=settings_keyboard(user))
+
+
+@router.callback_query(Setting.filter())
+async def setting_button(
+    query: CallbackQuery, callback_data: Setting, user: User
+) -> None:
+    value = callback_data.value
+    if callback_data.key == "remind" and value.isdecimal() and len(value) == 4:
+        value = f"{value[:2]}:{value[2:]}"
+    try:
+        # Callback data is client-supplied: it goes through the same validation as text.
+        change = parse_settings(f"{callback_data.key} {value}")
+    except AppError as err:
+        await query.answer(str(err), show_alert=True)
+        return
+    apply_settings(user, change, datetime.now(UTC))
+    await query.answer("Сохранено")
+    if isinstance(query.message, Message):
+        try:
+            await query.message.edit_text(
+                settings_text(user), reply_markup=settings_keyboard(user)
+            )
+        except TelegramBadRequest:
+            pass
 
 
 @router.message(Command("stats"))

@@ -50,18 +50,21 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - Card FSRS columns mirror `fsrs.Card`; convert only through `domain/srs.py`.
 - `cards.version` bumps on every review; callback buttons carry it, stale taps are rejected.
 - `review_logs` is append-only history for future FSRS parameter optimization. Never rewrite.
-- `review_logs.state_before IS NULL` marks a card's first review; the daily new-card limit
-  counts these, except rows with `is_triage` (the "I know it" answer in `/check`, which rates
-  every card of the word Easy).
+- `review_logs.state_before IS NULL` marks a card's first review. A word counts as a new word
+  today when its first non-triage review is today and it had none before (`is_triage` = the
+  "I know it" answer in `/check`, which rates every card of the word Easy).
 - `/check` walks words with no reviewed card in `words.id` order after `users.check_cursor`;
   both "know" and "learn" move the cursor through `advance_check`, a conditional UPDATE that
   rejects double taps and stale buttons. A skipped word is not offered again.
 - Handlers that take free text in an FSM state must exclude commands
   (`~F.text.startswith("/")`), or `/review` and friends get parsed as input.
-- Daily new-card allowance = `daily_new_cards` + `extra_new_cards` when `extra_new_cards_on`
-  is today's learning day ("Ещё N новых слов" button, a conditional UPDATE keyed on the extra
-  the button showed). When nothing is due, `next_card` shows a learning step due within
-  `LEARN_AHEAD` (20 min, as in Anki); review-state cards are never pulled forward.
+- New material is paced by the learner's ratings, not a fixed card count (`Pace` in
+  `services.py`): new cards stop while the FSRS forecast peak of the next 7 days (+ cards in
+  learning) reaches `daily_review_budget`, or while 3 of the last 10 answers today are Again;
+  brand-new words also stop at `daily_new_words` (NULL = no ceiling). Due learning and review
+  cards are never blocked. "Всё равно дальше" sets `pace_override_on` = today (conditional
+  UPDATE). When nothing is due, a learning step due within `LEARN_AHEAD` (20 min, as in Anki)
+  is shown early; review-state cards are never pulled forward.
 - Sibling burying: once any card of a word is reviewed today the word's other cards wait.
   The learning day rolls over at 04:00 local. Learning steps of the same card are not blocked.
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by

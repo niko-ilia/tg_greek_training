@@ -28,14 +28,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.bot.render import (
     RATING_LABELS,
-    MoreNew,
     NextCard,
+    PaceOverride,
     Rate,
     ShowAnswer,
     answer_text,
     expected_answer,
     format_interval,
-    more_new_keyboard,
+    pace_keyboard,
+    pace_text,
     question_text,
     rating_keyboard,
     show_answer_keyboard,
@@ -45,12 +46,13 @@ from greek_trainer.bot.tts import send_voice
 from greek_trainer.config import Settings
 from greek_trainer.db.models import Card, CardType, User
 from greek_trainer.domain.greek import Verdict, check_answer, check_translation
-from greek_trainer.domain.srs import learning_day_start, preview_intervals
+from greek_trainer.domain.srs import preview_intervals
 from greek_trainer.services import (
-    allow_more_new_cards,
     get_card,
+    get_pace,
     next_card,
     next_due_at,
+    override_pace_today,
     record_review,
 )
 
@@ -201,9 +203,9 @@ async def show_next_card(
     if card is None:
         await state.clear()
         upcoming = await next_due_at(session, user)
-        held_back = await next_card(session, user, now, ignore_new_limit=True)
+        held_back = await next_card(session, user, now, ignore_pace=True)
         text = (
-            "✅ Дневная порция новых слов пройдена."
+            pace_text(await get_pace(session, user, now))
             if held_back is not None
             else "🎉 На сейчас всё повторено."
         )
@@ -211,10 +213,7 @@ async def show_next_card(
             local = upcoming.astimezone(ZoneInfo(user.timezone))
             text += f"\nСледующее повторение: {local:%d.%m %H:%M}."
         if held_back is not None:
-            day = learning_day_start(now, user.timezone).date()
-            await bot.send_message(
-                chat_id, text, reply_markup=more_new_keyboard(user, day)
-            )
+            await bot.send_message(chat_id, text, reply_markup=pace_keyboard())
             return
         try:
             await bot.send_message(chat_id, text, message_effect_id=CONFETTI_EFFECT_ID)
@@ -275,22 +274,20 @@ async def next_callback(
     await show_next_card(bot, query.from_user.id, state, session, user, settings)
 
 
-@router.callback_query(MoreNew.filter())
-async def more_new(
+@router.callback_query(PaceOverride.filter())
+async def pace_override(
     query: CallbackQuery,
-    callback_data: MoreNew,
     bot: Bot,
     state: FSMContext,
     session: AsyncSession,
     user: User,
     settings: Settings,
 ) -> None:
-    now = datetime.now(UTC)
-    if not await allow_more_new_cards(session, user, callback_data.extra, now):
-        await query.answer("Уже добавлено.")
+    if not await override_pace_today(session, user, datetime.now(UTC)):
+        await query.answer("Уже продолжаем.")
         return
     await session.flush()
-    await query.answer(f"+{user.daily_new_cards} новых слов на сегодня")
+    await query.answer("Сегодня без ограничений")
     if isinstance(query.message, Message):
         try:
             await query.message.edit_reply_markup(reply_markup=None)

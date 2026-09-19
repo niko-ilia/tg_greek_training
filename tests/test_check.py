@@ -25,7 +25,7 @@ SCHEDULER = build_scheduler(0.9)
 async def test_check_walks_unseen_words_and_spares_the_daily_limit(
     session: AsyncSession, user: User
 ) -> None:
-    user.daily_new_cards = 1
+    user.daily_new_words = 1
     for text in ("ναι\nда\nΝαι, *ναι*. | Да, да.", "όχι\nнет"):
         await add_word(session, parse_word(text))
     await deal_missing_cards(session, user, NOW)
