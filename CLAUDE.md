@@ -24,6 +24,9 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   with a summary of what changed and how it was verified.
 - Done means: gates green, tests green, and for schema changes the migration check below passed.
 - Commit only when asked. Never commit `.env`.
+- Every piece of work has a Linear issue (team Prismgroup, project Greek Trainer). Its key
+  goes into the branch name and every commit subject: `fix/pri-88-tts-cache-race`,
+  `fix(PRI-88): ...`.
 - Schema changes only via Alembic: `alembic revision --autogenerate -m "..."` and review the file.
   Autogenerate misses enum drops (0001) and data moves, write those by hand.
 - Migration check (on the test DB, `DATABASE_URL=...greek_trainer_test`): reset schema, upgrade
@@ -118,6 +121,10 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 
 ## Style
 Shared Python conventions: `.claude/rules/code-style-python.md`. On top of that:
-- Comments only for a why, an external constraint, or an invariant the code cannot express.
+- Code explains itself; comments are rare and in English. A comment or docstring may only
+  state a why, an external constraint, or an invariant the code cannot express. If code needs
+  a comment to say what it does, rewrite it instead: a better name, a named constant, an
+  extracted function, a clearer value (`datetime(..., tzinfo=ZoneInfo(...))`, not a UTC time
+  with a comment). Never restate a name or narrate the next line.
 - Russian strings live in `render.py`, handler `HELP` text and error messages; keep them out
   of `domain/` and `services.py` except for `AppError` messages shown to the learner.

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import fsrs
 import pytest
@@ -26,8 +27,8 @@ from greek_trainer.services import (
 
 SCHEDULER = build_scheduler(0.9)
 
-# 19:30 in Nicosia (UTC+3), after the default 19:00 reminder.
-EVENING = datetime(2026, 9, 19, 16, 30, tzinfo=UTC)
+NICOSIA = ZoneInfo("Europe/Nicosia")
+EVENING = datetime(2026, 9, 19, 19, 30, tzinfo=NICOSIA).astimezone(UTC)
 _CHAT = {"id": 5, "type": "private"}
 _FROM = {"id": 5, "is_bot": False, "first_name": "Ν"}
 

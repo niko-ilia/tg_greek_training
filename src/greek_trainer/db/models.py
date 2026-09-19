@@ -60,7 +60,6 @@ class User(Base):
     last_reminded_on: Mapped[date | None] = mapped_column(Date)
     # Highest word id answered in /check ("know" or "learn"); the next pass continues after it.
     check_cursor: Mapped[int | None] = mapped_column(Integer)
-    # Telegram profile as of the last update, for knowing who uses the bot.
     username: Mapped[str | None] = mapped_column(String(64))
     first_name: Mapped[str | None] = mapped_column(String(128))
     last_name: Mapped[str | None] = mapped_column(String(128))

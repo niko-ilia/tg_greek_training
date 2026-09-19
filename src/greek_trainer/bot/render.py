@@ -114,7 +114,6 @@ def cloze_sentence(example: Example) -> str:
 
 
 def expected_answer(card: Card) -> str:
-    """What the learner must type: the translation, the lemma or the cloze form."""
     if card.card_type is CardType.RECOGNITION:
         return card.word.translation
     if card.card_type is CardType.CLOZE:
@@ -123,7 +122,6 @@ def expected_answer(card: Card) -> str:
     return card.word.lemma
 
 
-# One mark per exercise, kept on the card's message from question to result.
 EXERCISE_MARKS = {
     CardType.RECOGNITION: "🇬🇷",
     CardType.RECALL: "🇷🇺",
@@ -226,7 +224,6 @@ def check_keyboard(word: Word) -> InlineKeyboardMarkup:
     )
 
 
-# About 6 seconds per review card, for turning a budget into minutes.
 SECONDS_PER_REVIEW = 6
 WORD_PRESETS = ("10", "20", "30", "50", "off")
 BUDGET_PRESETS = ("100", "150", "250", "400")

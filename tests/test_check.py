@@ -51,7 +51,7 @@ async def test_check_walks_unseen_words_and_spares_the_daily_limit(
     assert second is not None and second.lemma == "όχι"
     assert await advance_check(session, user, second)
     assert not await advance_check(session, user, second)
-    assert not await mark_word_known(session, SCHEDULER, user, first, NOW)  # stale
+    assert not await mark_word_known(session, SCHEDULER, user, first, NOW)
     assert await next_unchecked_word(session, user) is None
     assert (await get_stats(session, user, NOW)).reviewed_today == 0
 

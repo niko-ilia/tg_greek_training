@@ -60,9 +60,7 @@ from greek_trainer.services import (
 
 router = Router(name="review")
 
-# Telegram limits media captions; longer answers go as a separate text message.
 CAPTION_LIMIT = 1024
-# Telegram's public "confetti" message effect, private chats only.
 CONFETTI_EFFECT_ID = "5046509860389126442"
 REACTIONS = {
     Verdict.CORRECT: "👍",
@@ -76,7 +74,6 @@ class Review(StatesGroup):
 
 
 def _pronounced_text(card: Card) -> str:
-    """What to read aloud once the answer is known: the whole sentence for cloze."""
     if card.card_type is CardType.CLOZE:
         assert card.example is not None
         return card.example.text_el
@@ -149,7 +146,6 @@ async def _edit_card_by_id(
     text: str,
     markup: InlineKeyboardMarkup | None,
 ) -> bool:
-    """Like `_edit_card` for the question message remembered in FSM data."""
     message_id = data.get("card_message_id")
     if message_id is None:
         return False
