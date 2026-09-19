@@ -10,6 +10,7 @@ from aiogram import Bot
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, Message
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.db.models import TtsCache
@@ -75,5 +76,11 @@ async def send_voice(
         return None
     file_id = _file_id(message)
     if file_id is not None:
-        session.add(TtsCache(voice=voice, text=text, telegram_file_id=file_id))
+        # DO NOTHING: two learners may synthesize the same text at once, and a
+        # failed cache insert would roll back their whole update, rating included.
+        await session.execute(
+            insert(TtsCache)
+            .values(voice=voice, text=text, telegram_file_id=file_id)
+            .on_conflict_do_nothing()
+        )
     return message
