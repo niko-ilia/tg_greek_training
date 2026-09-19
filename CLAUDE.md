@@ -89,7 +89,7 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - asyncpg rejects two statements in one `execute`; send them separately.
 - Async SQLAlchemy raises `MissingGreenlet` on any lazy load. Pass collections to constructors
   (`Word(cards=[...])`) or `selectinload` them; never touch an unloaded relationship.
-- `pydantic-settings` decodes list-like env values as JSON; `ALLOWED_TELEGRAM_IDS` is
+- `pydantic-settings` decodes list-like env values as JSON; `ADMIN_TELEGRAM_IDS` is
   comma-separated via `NoDecode` plus a validator in `config.py`.
 - Telegram may return a sent voice as `audio` or `document`; `tts.py` handles all three.
 - Test fixtures build the schema with `metadata.create_all`, so a passing test suite does not
