@@ -2,10 +2,10 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
 from aiogram.types import Update
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from greek_trainer.bot.middlewares import describe_update
 from greek_trainer.bot.reminders import send_due_reminders
@@ -95,10 +95,14 @@ async def test_visit_refreshes_profile_and_logs_an_event(
 
 
 async def test_a_learner_who_blocked_the_bot_does_not_stall_the_others(
-    session: AsyncSession, user: User, settings: Settings
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    settings: Settings,
 ) -> None:
     await add_word(session, parse_word("ναι\nда"))
     other = await get_or_create_user(session, 2, settings)
+    await session.commit()
     blocked = TelegramForbiddenError(method=MagicMock(), message="Forbidden: blocked")
 
     async def send(chat_id: int, *args: object, **kwargs: object) -> None:
@@ -106,10 +110,30 @@ async def test_a_learner_who_blocked_the_bot_does_not_stall_the_others(
             raise blocked
 
     bot = MagicMock(send_message=AsyncMock(side_effect=send))
-    await send_due_reminders(bot, session, EVENING)
-    assert user.blocked_at == EVENING and user.last_reminded_on is None
+    await send_due_reminders(bot, session_factory, EVENING)
+    assert bot.send_message.await_count == 2
+    await session.refresh(user)
+    await session.refresh(other)
+    assert user.blocked_at == EVENING
     assert other.blocked_at is None and other.last_reminded_on is not None
 
     bot.send_message.reset_mock()
-    await send_due_reminders(bot, session, EVENING)
+    await send_due_reminders(bot, session_factory, EVENING)
     bot.send_message.assert_not_awaited()
+
+
+async def test_a_failed_send_is_not_retried_every_minute(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+) -> None:
+    await add_word(session, parse_word("ναι\nда"))
+    await session.commit()
+    offline = TelegramNetworkError(method=MagicMock(), message="timeout")
+    bot = MagicMock(send_message=AsyncMock(side_effect=offline))
+
+    await send_due_reminders(bot, session_factory, EVENING)
+    await send_due_reminders(bot, session_factory, EVENING)
+    assert bot.send_message.await_count == 1
+    await session.refresh(user)
+    assert user.last_reminded_on is not None and user.blocked_at is None

@@ -67,8 +67,12 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   refreshes the user's Telegram profile and `last_seen_at`, clears `blocked_at`, and writes one
   `usage_events` row per update (kind + action from `describe_update`). Never store message
   text in `usage_events`.
-- Reminders catch Telegram errors per user: a blocked learner gets `blocked_at` and is skipped;
-  one failure must not roll back `last_reminded_on` of the others.
+- Reminders run one short transaction per learner: lock the `users` row, claim the reminder
+  (`last_reminded_on`), commit, then send outside any transaction. Never hold a row lock across
+  a Telegram call: every update writes to `users`. A lost send skips that day's reminder (at
+  most once, never repeated); `TelegramForbiddenError` sets `blocked_at`.
+- Code that commits on its own (reminders) takes a session factory; tests pass the
+  `session_factory` fixture, whose commits become savepoints of the per-test rollback.
 - One message per card: the question is a voice message with the text as caption (raw HTML
   under 1024 chars, otherwise plain text), edited in place into the answer and then the result.
   FSM data keeps `card_message_id` and `card_has_caption` for that. `/check` edits one message

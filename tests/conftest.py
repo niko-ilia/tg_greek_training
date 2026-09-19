@@ -2,7 +2,13 @@ import os
 from collections.abc import AsyncIterator
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from greek_trainer.config import Settings
 from greek_trainer.db.models import Base, User
@@ -25,18 +31,30 @@ async def engine() -> AsyncIterator[AsyncEngine]:
 
 
 @pytest.fixture
-async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    """A session whose work is rolled back after each test."""
+async def connection(engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """A connection whose work is rolled back after each test."""
     async with engine.connect() as conn:
         transaction = await conn.begin()
-        session = AsyncSession(
-            bind=conn,
-            expire_on_commit=False,
-            join_transaction_mode="create_savepoint",
-        )
-        yield session
-        await session.close()
+        yield conn
         await transaction.rollback()
+
+
+@pytest.fixture
+def session_factory(connection: AsyncConnection) -> async_sessionmaker[AsyncSession]:
+    """Sessions for code that manages its own transactions; commits become savepoints."""
+    return async_sessionmaker(
+        bind=connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+
+
+@pytest.fixture
+async def session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[AsyncSession]:
+    async with session_factory() as session:
+        yield session
 
 
 @pytest.fixture
