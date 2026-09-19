@@ -62,6 +62,10 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by
   word, then card type (recognition before recall).
 - One DB transaction per Telegram update; handlers receive `session` and `user`.
+- One message per card: the question is a voice message with the text as caption (raw HTML
+  under 1024 chars, otherwise plain text), edited in place into the answer and then the result.
+  FSM data keeps `card_message_id` and `card_has_caption` for that. `/check` edits one message
+  through the whole pass. Never add a second message where an edit will do.
 - Deploy: Coolify app `greek-trainer-bot` builds `main` on push (watch paths include `seeds/**`);
   env vars live in Coolify, never in the repo.
 - Bot messages use HTML parse mode: pass every user- or dictionary-supplied string through

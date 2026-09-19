@@ -151,8 +151,12 @@ def next_card_keyboard(text: str = "Дальше") -> InlineKeyboardMarkup:
     )
 
 
-def check_text(word: Word) -> str:
-    return f"🇬🇷 <b>{escape(word.lemma)}</b> – {escape(word.translation)}"
+def check_text(word: Word, remaining: int, previous: str | None = None) -> str:
+    lines = [f"🔎 Проверка · осталось {remaining}"]
+    if previous:
+        lines.append(previous)
+    lines += ["", f"🇬🇷 <b>{escape(word.lemma)}</b> – {escape(word.translation)}"]
+    return "\n".join(lines)
 
 
 def check_keyboard(word: Word) -> InlineKeyboardMarkup:
