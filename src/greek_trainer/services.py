@@ -23,7 +23,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from greek_trainer.config import Settings
-from greek_trainer.db.models import Card, CardType, Example, ReviewLog, User, Word
+from greek_trainer.db.models import (
+    Card,
+    CardType,
+    Example,
+    ReviewLog,
+    UsageEvent,
+    User,
+    Word,
+)
 from greek_trainer.domain.greek import lemma_key
 from greek_trainer.domain.srs import (
     apply_fsrs,
@@ -49,6 +57,35 @@ async def get_or_create_user(
         session.add(user)
         await session.flush()
     return user
+
+
+@dataclass(frozen=True)
+class Visit:
+    """What the bot learned about the learner from one update."""
+
+    username: str | None
+    first_name: str | None
+    last_name: str | None
+    language_code: str | None
+    kind: str
+    action: str
+
+
+def record_visit(
+    session: AsyncSession, user: User, visit: Visit, now: datetime
+) -> None:
+    """Refresh the learner's profile and log the update in the usage journal."""
+    user.username = visit.username
+    user.first_name = visit.first_name
+    user.last_name = visit.last_name
+    user.language_code = visit.language_code
+    user.last_seen_at = now
+    user.blocked_at = None
+    session.add(
+        UsageEvent(
+            user_id=user.id, occurred_at=now, kind=visit.kind, action=visit.action
+        )
+    )
 
 
 async def deal_missing_cards(session: AsyncSession, user: User, now: datetime) -> None:

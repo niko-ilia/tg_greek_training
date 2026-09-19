@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import time
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -20,15 +20,23 @@ class DatabaseSettings(BaseSettings):
 class Settings(DatabaseSettings):
     """Runtime configuration; see `.env.example` for every variable."""
 
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", populate_by_name=True
+    )
+
     bot_token: str
-    allowed_telegram_ids: Annotated[frozenset[int], NoDecode, Field(min_length=1)]
+    # ALLOWED_TELEGRAM_IDS is the pre-public name, kept so existing deploys keep working.
+    admin_telegram_ids: Annotated[frozenset[int], NoDecode] = Field(
+        default=frozenset(),
+        validation_alias=AliasChoices("ADMIN_TELEGRAM_IDS", "ALLOWED_TELEGRAM_IDS"),
+    )
     timezone: str = "Europe/Nicosia"
     reminder_time: time = time(19, 0)
     daily_new_cards: int = 20
     desired_retention: float = 0.9
     tts_voice: str = "el-GR-AthinaNeural"
 
-    @field_validator("allowed_telegram_ids", mode="before")
+    @field_validator("admin_telegram_ids", mode="before")
     @classmethod
     def _split_ids(cls, value: object) -> object:
         if isinstance(value, str):

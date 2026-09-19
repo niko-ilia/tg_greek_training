@@ -2,7 +2,8 @@
 
 Telegram bot for memorizing Greek vocabulary with FSRS spaced repetition. The dictionary
 (`words`, `examples`) is shared by every learner; cards and review logs are per Telegram user.
-Access is an allowlist of Telegram ids. User-facing text is Russian; code, comments, tests,
+Open to anyone in private chats; `ADMIN_TELEGRAM_IDS` (old name `ALLOWED_TELEGRAM_IDS` still
+read) lists admins, the only ones allowed to `/add` words. User-facing text is Russian; code, comments, tests,
 migrations and this file are English. `README.md` is the human-facing doc, in Russian.
 
 ## Commands
@@ -62,6 +63,12 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by
   word, then card type (recognition before recall).
 - One DB transaction per Telegram update; handlers receive `session` and `user`.
+- `PrivateChatsOnlyMiddleware` drops group chats and senderless updates. `DbSessionMiddleware`
+  refreshes the user's Telegram profile and `last_seen_at`, clears `blocked_at`, and writes one
+  `usage_events` row per update (kind + action from `describe_update`). Never store message
+  text in `usage_events`.
+- Reminders catch Telegram errors per user: a blocked learner gets `blocked_at` and is skipped;
+  one failure must not roll back `last_reminded_on` of the others.
 - One message per card: the question is a voice message with the text as caption (raw HTML
   under 1024 chars, otherwise plain text), edited in place into the answer and then the result.
   FSM data keeps `card_message_id` and `card_has_caption` for that. `/check` edits one message

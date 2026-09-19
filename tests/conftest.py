@@ -41,7 +41,7 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(bot_token="test", allowed_telegram_ids=frozenset({1}))
+    return Settings(bot_token="test", admin_telegram_ids=frozenset({1}))
 
 
 @pytest.fixture

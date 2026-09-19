@@ -1,4 +1,4 @@
-"""/start, /help, /add, /stats, /settings."""
+"""/start, /help, /add, /stats, /settings, and the learner blocking the bot."""
 
 from __future__ import annotations
 
@@ -6,10 +6,11 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
+from aiogram.enums import ChatMemberStatus
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import ChatMemberUpdated, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.bot.render import (
@@ -18,6 +19,7 @@ from greek_trainer.bot.render import (
     stats_text,
     word_text,
 )
+from greek_trainer.config import Settings
 from greek_trainer.db.models import User
 from greek_trainer.domain.settings_input import parse_settings
 from greek_trainer.domain.word_input import parse_word
@@ -30,9 +32,11 @@ HELP = """<b>Γεια σου!</b> Я помогаю запоминать гре�
 
 /review – повторение (карточки по алгоритму FSRS)
 /check – быстро отметить слова, которые уже знаешь
-/add – добавить слово
 /stats – статистика
-/settings – лимит новых карточек и время напоминания
+/settings – лимит новых карточек и время напоминания"""
+
+ADMIN_HELP = """<b>Для администраторов</b>
+/add – добавить слово в общий словарь, оно появится у всех учеников.
 
 <b>Формат /add</b>
 <code>ξέρω
@@ -48,10 +52,22 @@ class AddWord(StatesGroup):
     waiting_for_word = State()
 
 
+def is_admin(settings: Settings, user: User) -> bool:
+    return user.telegram_id in settings.admin_telegram_ids
+
+
 @router.message(CommandStart())
 @router.message(Command("help"))
-async def start(message: Message) -> None:
-    await message.answer(HELP)
+async def start(message: Message, settings: Settings, user: User) -> None:
+    text = f"{HELP}\n\n{ADMIN_HELP}" if is_admin(settings, user) else HELP
+    await message.answer(text)
+
+
+@router.my_chat_member()
+async def chat_member_changed(event: ChatMemberUpdated, user: User) -> None:
+    # The middleware already cleared blocked_at, so "unblocked" needs no handling.
+    if event.new_chat_member.status == ChatMemberStatus.KICKED:
+        user.blocked_at = datetime.now(UTC)
 
 
 @router.message(Command("add"))
@@ -61,7 +77,13 @@ async def add_command(
     state: FSMContext,
     session: AsyncSession,
     user: User,
+    settings: Settings,
 ) -> None:
+    if not is_admin(settings, user):
+        await message.answer(
+            "Добавлять слова в общий словарь могут только администраторы."
+        )
+        return
     if command.args:
         await _add(message, command.args, session, user)
         return
