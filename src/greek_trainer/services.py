@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import fsrs
 from sqlalchemy import (
+    Exists,
     Select,
     case,
     except_,
@@ -178,10 +179,15 @@ async def add_word(session: AsyncSession, draft: WordDraft) -> Word:
 # Like Anki's "learn ahead limit": when nothing is due, a learning step that is
 # due this soon is shown now rather than making the learner wait.
 LEARN_AHEAD = timedelta(minutes=20)
+# Unlike Anki's screen, the chat keeps the last answers visible just above, so a
+# card answered this recently is never pulled forward.
+MIN_REPEAT_GAP = timedelta(minutes=3)
 # How far ahead the review forecast looks. A new card rated Good returns in 2-3
 # days, so a forecast of tomorrow alone would not see the load it creates.
 FORECAST_DAYS = 7
-# "Struggling" = at least this many "Забыл" among the last STRUGGLE_WINDOW answers today.
+# "Struggling" = at least this many "Забыл" among the last STRUGGLE_WINDOW answers
+# today on words started on earlier days; forgetting a word met today, however
+# many times, is just learning it.
 STRUGGLE_WINDOW = 10
 STRUGGLE_AGAIN = 3
 
@@ -211,20 +217,40 @@ class Pace:
         return self.allows_new_cards and (self.overridden or under_cap)
 
 
+def _word_seen_before(user: User, day_start: datetime) -> Exists:
+    """Correlated on `Card`: the learner answered some card of its word before today."""
+    card, log = aliased(Card), aliased(ReviewLog)
+    return exists(
+        select(log.id)
+        .join(card, card.id == log.card_id)
+        .where(
+            card.user_id == user.id,
+            card.word_id == Card.word_id,
+            log.reviewed_at < day_start,
+        )
+    )
+
+
+def _buried_today(day_start: datetime) -> Exists:
+    """Correlated on `Card`: another card of its word was answered today."""
+    sibling, log = aliased(Card), aliased(ReviewLog)
+    return exists(
+        select(log.id)
+        .join(sibling, sibling.id == log.card_id)
+        .where(
+            sibling.user_id == Card.user_id,
+            sibling.word_id == Card.word_id,
+            sibling.id != Card.id,
+            log.reviewed_at >= day_start,
+        )
+    )
+
+
 async def _new_words_started(
     session: AsyncSession, user: User, day_start: datetime
 ) -> int:
     """Words whose first card was answered today (answers in /check do not count)."""
-    earlier_card = aliased(Card)
-    reviewed_before = exists(
-        select(ReviewLog.id)
-        .join(earlier_card, earlier_card.id == ReviewLog.card_id)
-        .where(
-            earlier_card.user_id == user.id,
-            earlier_card.word_id == Card.word_id,
-            ReviewLog.reviewed_at < day_start,
-        )
-    )
+    reviewed_before = _word_seen_before(user, day_start)
     stmt = (
         select(func.count(func.distinct(Card.word_id)))
         .select_from(ReviewLog)
@@ -269,6 +295,7 @@ async def _struggling(session: AsyncSession, user: User, day_start: datetime) ->
             Card.user_id == user.id,
             ReviewLog.is_triage.is_(False),
             ReviewLog.reviewed_at >= day_start,
+            _word_seen_before(user, day_start),
         )
         .order_by(ReviewLog.reviewed_at.desc(), ReviewLog.id.desc())
         .limit(STRUGGLE_WINDOW)
@@ -322,23 +349,15 @@ async def next_card(
     check. Siblings are buried: once any card of a word was reviewed today, the
     word's other cards wait until tomorrow, so recognition does not give away
     the answer to the recall drill. When nothing is due, a learning step due
-    within `LEARN_AHEAD` is shown early.
+    within `LEARN_AHEAD` is shown early, unless it was answered less than
+    `MIN_REPEAT_GAP` ago.
 
     `ignore_pace` answers "would a new card come if the pace allowed it";
     `learn_ahead=False` answers "is anything due right now".
     """
     day_start = learning_day_start(now, user.timezone)
     sibling = aliased(Card)
-    sibling_reviewed_today = exists(
-        select(ReviewLog.id)
-        .join(sibling, sibling.id == ReviewLog.card_id)
-        .where(
-            sibling.user_id == Card.user_id,
-            sibling.word_id == Card.word_id,
-            sibling.id != Card.id,
-            ReviewLog.reviewed_at >= day_start,
-        )
-    )
+    sibling_reviewed_today = _buried_today(day_start)
     word_started = exists(
         select(sibling.id).where(
             sibling.user_id == Card.user_id,
@@ -379,7 +398,13 @@ async def next_card(
     in_learning = Card.last_review.is_not(None) & (
         Card.state != fsrs.State.Review.value
     )
-    return await session.scalar(stmt.where(in_learning, Card.due <= now + LEARN_AHEAD))
+    return await session.scalar(
+        stmt.where(
+            in_learning,
+            Card.due <= now + LEARN_AHEAD,
+            Card.last_review <= now - MIN_REPEAT_GAP,
+        )
+    )
 
 
 def apply_settings(user: User, change: SettingsChange, now: datetime) -> None:
@@ -408,11 +433,44 @@ def _skip_reminder_already_past(user: User, now: datetime) -> None:
         user.last_reminded_on = local.date()
 
 
-async def next_due_at(session: AsyncSession, user: User) -> datetime | None:
-    stmt = select(func.min(Card.due)).where(
-        Card.user_id == user.id, Card.last_review.is_not(None)
+async def next_due_at(
+    session: AsyncSession, user: User, now: datetime
+) -> datetime | None:
+    """When the next started card becomes available.
+
+    A card buried for today comes back at the next learning-day start at the
+    earliest, whatever its due date says.
+    """
+    day_start = learning_day_start(now, user.timezone)
+    started = Card.user_id == user.id, Card.last_review.is_not(None)
+    buried = _buried_today(day_start)
+    free = await session.scalar(select(func.min(Card.due)).where(*started, ~buried))
+    held = await session.scalar(select(func.min(Card.due)).where(*started, buried))
+    if held is not None:
+        held = max(held, day_start + timedelta(days=1))
+    return min((t for t in (free, held) if t is not None), default=None)
+
+
+async def repeat_gap_ends_at(
+    session: AsyncSession, user: User, now: datetime
+) -> datetime | None:
+    """When a card held back only by `MIN_REPEAT_GAP` becomes available, if any.
+
+    These are the learner's just-answered learning steps: learn-ahead would
+    show them now if their answer were not still on screen.
+    """
+    day_start = learning_day_start(now, user.timezone)
+    rows = await session.execute(
+        select(Card.due, Card.last_review).where(
+            Card.user_id == user.id,
+            Card.last_review > now - MIN_REPEAT_GAP,
+            Card.state != fsrs.State.Review.value,
+            Card.due > now,
+            Card.due <= now + LEARN_AHEAD,
+            ~_buried_today(day_start),
+        )
     )
-    return await session.scalar(stmt)
+    return min((min(due, last + MIN_REPEAT_GAP) for due, last in rows), default=None)
 
 
 async def due_count(session: AsyncSession, user: User, now: datetime) -> int:

@@ -7,11 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.config import Settings
 from greek_trainer.db.models import Card, CardType, ReviewLog, User, Word
-from greek_trainer.domain.srs import build_scheduler
+from greek_trainer.domain.srs import build_scheduler, learning_day_start
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.errors import DuplicateWordError
 from greek_trainer.services import (
     LEARN_AHEAD,
+    MIN_REPEAT_GAP,
     STRUGGLE_AGAIN,
     add_word,
     deal_missing_cards,
@@ -19,8 +20,10 @@ from greek_trainer.services import (
     get_pace,
     get_stats,
     next_card,
+    next_due_at,
     override_pace_today,
     record_review,
+    repeat_gap_ends_at,
 )
 
 NOW = datetime(2026, 9, 18, 9, 0, tzinfo=UTC)
@@ -160,12 +163,21 @@ async def test_override_lifts_the_brakes_for_today_only(
     assert not (await get_pace(session, user, NOW + timedelta(days=1))).overridden
 
 
-async def test_forgetting_pauses_new_words(session: AsyncSession, user: User) -> None:
+async def test_forgetting_known_words_pauses_new_words(
+    session: AsyncSession, user: User
+) -> None:
+    yesterday = NOW - timedelta(days=1)
     for lemma in ("ένα", "δύο", "τρία", "τέσσερα"):
-        await _add(session, user, f"{lemma}\nчисло")
+        await add_word(session, parse_word(f"{lemma}\nчисло"))
+    await deal_missing_cards(session, user, yesterday)
+    for _ in range(STRUGGLE_AGAIN):
+        card = await next_card(session, user, yesterday)
+        assert card is not None and card.last_review is None
+        record_review(session, SCHEDULER, card, fsrs.Rating.Good, yesterday)
+        await session.flush()
     for _ in range(STRUGGLE_AGAIN):
         card = await next_card(session, user, NOW)
-        assert card is not None and card.last_review is None
+        assert card is not None and card.last_review is not None
         record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
         await session.flush()
 
@@ -174,6 +186,22 @@ async def test_forgetting_pauses_new_words(session: AsyncSession, user: User) ->
     # The forgotten cards themselves keep coming back: learning is never blocked.
     again = await next_card(session, user, NOW + timedelta(minutes=2))
     assert again is not None and again.last_review is not None
+
+
+async def test_forgetting_brand_new_words_is_not_struggling(
+    session: AsyncSession, user: User
+) -> None:
+    for lemma in ("ένα", "δύο", "τρία", "τέσσερα"):
+        await _add(session, user, f"{lemma}\nчисло")
+    for _ in range(STRUGGLE_AGAIN):
+        card = await next_card(session, user, NOW)
+        assert card is not None and card.last_review is None
+        record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
+        await session.flush()
+
+    assert not (await get_pace(session, user, NOW)).struggling
+    fourth = await next_card(session, user, NOW)
+    assert fourth is not None and fourth.word.lemma == "τέσσερα"
 
 
 async def test_a_heavy_week_ahead_pauses_new_words(
@@ -199,8 +227,93 @@ async def test_a_learning_step_due_soon_is_shown_instead_of_waiting(
     assert card is not None
     record_review(session, SCHEDULER, card, fsrs.Rating.Good, NOW)
     await session.flush()
-    assert card.due > NOW  # the next learning step is minutes away
+    later = NOW + MIN_REPEAT_GAP + timedelta(minutes=1)
+    assert card.due > later  # the next learning step is still ahead
 
-    early = await next_card(session, user, NOW + timedelta(minutes=1))
+    early = await next_card(session, user, later)
     assert early is not None and early.id == card.id
-    assert card.due - (NOW + timedelta(minutes=1)) <= LEARN_AHEAD
+    assert card.due - later <= LEARN_AHEAD
+
+
+async def test_a_card_just_answered_is_not_asked_again_right_away(
+    session: AsyncSession, user: User
+) -> None:
+    await _add(session, user, "έχω\nиметь")
+    card = await next_card(session, user, NOW)
+    assert card is not None
+    record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
+    await session.flush()
+
+    # Its answer is still on screen: nothing to show until the step is due.
+    assert await next_card(session, user, NOW + timedelta(seconds=10)) is None
+    back = await next_card(session, user, card.due)
+    assert back is not None and back.id == card.id
+
+
+async def test_a_buried_overdue_card_does_not_loop_the_session(
+    session: AsyncSession, user: User
+) -> None:
+    two_days_ago, yesterday = NOW - timedelta(days=2), NOW - timedelta(days=1)
+    await add_word(session, parse_word("ναι\nда"))
+    await deal_missing_cards(session, user, two_days_ago)
+    recognition, recall = await _cards(session, user)
+    record_review(session, SCHEDULER, recognition, fsrs.Rating.Good, two_days_ago)
+    record_review(session, SCHEDULER, recall, fsrs.Rating.Good, yesterday)
+    await session.flush()
+    # Both are overdue learning steps today; answering one buries the other.
+    assert recognition.due < NOW and recall.due < NOW
+    record_review(session, SCHEDULER, recognition, fsrs.Rating.Good, NOW)
+    await session.flush()
+
+    assert await next_card(session, user, NOW) is None
+    assert await repeat_gap_ends_at(session, user, NOW) is None  # no "Дальше" loop
+    tomorrow_start = learning_day_start(NOW, user.timezone) + timedelta(days=1)
+    assert await next_due_at(session, user, NOW) == tomorrow_start
+
+
+async def test_just_forgotten_card_says_when_it_returns(
+    session: AsyncSession, user: User
+) -> None:
+    await _add(session, user, "έχω\nиметь")
+    card = await next_card(session, user, NOW)
+    assert card is not None
+    record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
+    await session.flush()
+    assert await repeat_gap_ends_at(session, user, NOW) == card.due
+
+
+async def test_a_new_word_forgotten_on_every_step_is_not_struggling(
+    session: AsyncSession, user: User
+) -> None:
+    await _add(session, user, "δύσκολο\nтрудный")
+    await _add(session, user, "εύκολο\nлёгкий")
+    card = await next_card(session, user, NOW)
+    assert card is not None
+    for minute in range(STRUGGLE_AGAIN):
+        record_review(
+            session, SCHEDULER, card, fsrs.Rating.Again, NOW + timedelta(minutes=minute)
+        )
+        await session.flush()
+
+    later = NOW + timedelta(minutes=STRUGGLE_AGAIN)
+    assert not (await get_pace(session, user, later)).struggling
+
+
+async def test_second_day_cards_of_a_started_word_do_not_spend_the_ceiling(
+    session: AsyncSession, user: User
+) -> None:
+    user.daily_new_words = 1
+    await _add(session, user, "ναι\nда")
+    await _add(session, user, "όχι\nнет")
+    first = await next_card(session, user, NOW)
+    assert first is not None and first.word.lemma == "ναι"
+    record_review(session, SCHEDULER, first, fsrs.Rating.Easy, NOW)
+    await session.flush()
+
+    tomorrow = NOW + timedelta(days=1)
+    recall = await next_card(session, user, tomorrow)
+    assert recall is not None and recall.word.lemma == "ναι"
+    record_review(session, SCHEDULER, recall, fsrs.Rating.Easy, tomorrow)
+    await session.flush()
+    new_word = await next_card(session, user, tomorrow)
+    assert new_word is not None and new_word.word.lemma == "όχι"
