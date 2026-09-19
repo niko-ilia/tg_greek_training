@@ -65,7 +65,12 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - One message per card: the question is a voice message with the text as caption (raw HTML
   under 1024 chars, otherwise plain text), edited in place into the answer and then the result.
   FSM data keeps `card_message_id` and `card_has_caption` for that. `/check` edits one message
-  through the whole pass. Never add a second message where an edit will do.
+  through the whole pass. Never add a second message where an edit will do, but never leave
+  the learner without buttons either: when an edit fails or the caption would exceed 1024,
+  `_replace_card` removes the old buttons and sends the text anew. "message is not modified"
+  counts as success (repeated tap or Telegram retry).
+- `show_next_card` stores the card in FSM data before sending it (synthesis is slow) and adds
+  the message id after.
 - Deploy: Coolify app `greek-trainer-bot` builds `main` on push (watch paths include `seeds/**`);
   env vars live in Coolify, never in the repo.
 - Bot messages use HTML parse mode: pass every user- or dictionary-supplied string through

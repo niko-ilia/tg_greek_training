@@ -95,17 +95,39 @@ async def _send_card(
     return await bot.send_message(chat_id, text, reply_markup=markup), False
 
 
+def _already_applied(err: TelegramBadRequest) -> bool:
+    """A repeated tap or a Telegram retry: the message already shows this text."""
+    return "message is not modified" in err.message
+
+
 async def _edit_card(
     message: Message, text: str, markup: InlineKeyboardMarkup | None
 ) -> bool:
+    """Edit the card in place; False means the caller must send `text` anew."""
+    is_caption = message.voice is not None
+    if is_caption and len(text) > CAPTION_LIMIT:
+        return False
     try:
-        if message.voice is not None:
+        if is_caption:
             await message.edit_caption(caption=text, reply_markup=markup)
         else:
             await message.edit_text(text, reply_markup=markup)
-    except TelegramBadRequest:
-        return False
+    except TelegramBadRequest as err:
+        return _already_applied(err)
     return True
+
+
+async def _replace_card(
+    bot: Bot, message: Message, text: str, markup: InlineKeyboardMarkup | None
+) -> None:
+    """Show `text` on the card; if it can't be edited, retire its buttons and resend."""
+    if await _edit_card(message, text, markup):
+        return
+    try:
+        await message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    await bot.send_message(message.chat.id, text, reply_markup=markup)
 
 
 async def _edit_card_by_id(
@@ -115,11 +137,15 @@ async def _edit_card_by_id(
     text: str,
     markup: InlineKeyboardMarkup | None,
 ) -> bool:
+    """Like `_edit_card` for the question message remembered in FSM data."""
     message_id = data.get("card_message_id")
     if message_id is None:
         return False
+    is_caption = bool(data.get("card_has_caption"))
+    if is_caption and len(text) > CAPTION_LIMIT:
+        return False
     try:
-        if data.get("card_has_caption"):
+        if is_caption:
             await bot.edit_message_caption(
                 chat_id=chat_id,
                 message_id=message_id,
@@ -130,9 +156,21 @@ async def _edit_card_by_id(
             await bot.edit_message_text(
                 text, chat_id=chat_id, message_id=message_id, reply_markup=markup
             )
-    except TelegramBadRequest:
-        return False
+    except TelegramBadRequest as err:
+        return _already_applied(err)
     return True
+
+
+async def _drop_markup_by_id(bot: Bot, chat_id: int, data: dict[str, Any]) -> None:
+    message_id = data.get("card_message_id")
+    if message_id is None:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=message_id, reply_markup=None
+        )
+    except TelegramBadRequest:
+        pass
 
 
 async def _react(message: Message, verdict: Verdict) -> None:
@@ -165,8 +203,12 @@ async def show_next_card(
             await bot.send_message(chat_id, text)
         return
 
+    # Store the card before sending: synthesis takes seconds, and an answer typed
+    # meanwhile must be checked against this card, not the previous one.
+    await state.set_data(
+        {"card_id": card.id, "version": card.version, "shown_at": now.isoformat()}
+    )
     await state.set_state(Review.waiting_for_answer)
-    data = {"card_id": card.id, "version": card.version, "shown_at": now.isoformat()}
     if card.card_type is CardType.RECOGNITION:
         sent, has_caption = await _send_card(
             bot,
@@ -184,9 +226,9 @@ async def show_next_card(
             reply_markup=ForceReply(input_field_placeholder="Напиши по-гречески"),
         )
         has_caption = False
-    data["card_message_id"] = sent.message_id
-    data["card_has_caption"] = has_caption
-    await state.set_data(data)
+    await state.update_data(
+        card_message_id=sent.message_id, card_has_caption=has_caption
+    )
 
 
 @router.message(Command("review"))
@@ -218,6 +260,7 @@ async def next_callback(
 async def show_answer(
     query: CallbackQuery,
     callback_data: ShowAnswer,
+    bot: Bot,
     session: AsyncSession,
     user: User,
     fsrs_scheduler: fsrs.Scheduler,
@@ -229,7 +272,8 @@ async def show_answer(
     await query.answer()
     if isinstance(query.message, Message):
         previews = preview_intervals(fsrs_scheduler, card, datetime.now(UTC))
-        await _edit_card(
+        await _replace_card(
+            bot,
             query.message,
             answer_text(card, verdict=None, typed=None),
             rating_keyboard(card, previews),
@@ -265,6 +309,7 @@ async def typed_answer(
     markup = rating_keyboard(card, previews)
     if card.card_type is CardType.RECOGNITION:
         if not await _edit_card_by_id(bot, message.chat.id, data, text, markup):
+            await _drop_markup_by_id(bot, message.chat.id, data)
             await message.answer(text, reply_markup=markup)
     else:
         await _send_card(
@@ -319,5 +364,7 @@ async def rate(
             f"{RATING_LABELS[rating]} → следующий раз через "
             f"{format_interval(card.due - now)}"
         )
-        await _edit_card(query.message, f"{word_text(card.word)}\n\n{result}", None)
+        await _replace_card(
+            bot, query.message, f"{word_text(card.word)}\n\n{result}", None
+        )
     await show_next_card(bot, query.from_user.id, state, session, user, settings)
