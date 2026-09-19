@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import enum
+import re
 import unicodedata
+
+_TRANSLATION_SEPARATORS = re.compile(r"[;,/]")
 
 _TRAILING_PUNCTUATION = " .,!?;:·;«»\"'"
 
@@ -30,6 +33,20 @@ def lemma_key(text: str) -> str:
     `casefold()` also folds final sigma ς into σ.
     """
     return strip_accents(_clean(text)).casefold()
+
+
+def check_translation(given: str, translation: str) -> Verdict:
+    """Compare a typed Russian translation with the stored one.
+
+    The stored translation may list variants ("знать; уметь"); any of them
+    counts. Letter case and е/ё do not matter.
+    """
+
+    def key(text: str) -> str:
+        return _clean(text).casefold().replace("ё", "е")
+
+    variants = {key(part) for part in _TRANSLATION_SEPARATORS.split(translation)}
+    return Verdict.CORRECT if key(given) in variants - {""} else Verdict.WRONG
 
 
 def check_answer(given: str, expected: str) -> Verdict:

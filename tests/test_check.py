@@ -10,6 +10,7 @@ from greek_trainer.domain.word_input import parse_word
 from greek_trainer.services import (
     add_word,
     advance_check,
+    count_unchecked_words,
     deal_missing_cards,
     get_stats,
     mark_word_known,
@@ -29,6 +30,7 @@ async def test_check_walks_unseen_words_and_spares_the_daily_limit(
         await add_word(session, parse_word(text))
     await deal_missing_cards(session, user, NOW)
 
+    assert await count_unchecked_words(session, user) == 2
     first = await next_unchecked_word(session, user)
     assert first is not None and first.lemma == "ναι"
     assert await mark_word_known(session, SCHEDULER, user, first, NOW)
@@ -44,6 +46,7 @@ async def test_check_walks_unseen_words_and_spares_the_daily_limit(
     logs = list(await session.scalars(select(ReviewLog)))
     assert len(logs) == 3 and all(log.is_triage for log in logs)
 
+    assert await count_unchecked_words(session, user) == 1
     second = await next_unchecked_word(session, user)
     assert second is not None and second.lemma == "όχι"
     assert await advance_check(session, user, second)

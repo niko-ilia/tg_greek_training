@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 import fsrs
 from sqlalchemy import (
+    Select,
     case,
     except_,
     exists,
@@ -232,11 +233,11 @@ def record_review(
     )
 
 
-async def next_unchecked_word(session: AsyncSession, user: User) -> Word | None:
-    """Next word the learner has never reviewed, for /check.
+def _unchecked_words(user: User) -> Select[tuple[Word]]:
+    """Words the learner has never reviewed, after `check_cursor`.
 
-    Continues after `check_cursor`, so words answered with "know" or "learn"
-    are not shown again until the cursor is reset.
+    Words answered in /check with "know" or "learn" sit below the cursor, so
+    they are not offered again until the cursor is reset.
     """
     seen = exists(
         select(Card.id).where(
@@ -245,10 +246,19 @@ async def next_unchecked_word(session: AsyncSession, user: User) -> Word | None:
             Card.last_review.is_not(None),
         )
     )
-    stmt = select(Word).where(~seen).order_by(Word.id).limit(1)
+    stmt = select(Word).where(~seen)
     if user.check_cursor is not None:
         stmt = stmt.where(Word.id > user.check_cursor)
-    return await session.scalar(stmt)
+    return stmt
+
+
+async def next_unchecked_word(session: AsyncSession, user: User) -> Word | None:
+    return await session.scalar(_unchecked_words(user).order_by(Word.id).limit(1))
+
+
+async def count_unchecked_words(session: AsyncSession, user: User) -> int:
+    stmt = select(func.count()).select_from(_unchecked_words(user).subquery())
+    return (await session.scalar(stmt)) or 0
 
 
 async def advance_check(session: AsyncSession, user: User, word: Word) -> bool:

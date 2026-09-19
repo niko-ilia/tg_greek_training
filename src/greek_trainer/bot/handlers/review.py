@@ -1,16 +1,29 @@
-"""Review session: show a card, take the answer, record the FSRS rating."""
+"""Review session: show a card, take the answer, record the FSRS rating.
+
+Each card lives in one message: the question (a voice message with a caption
+when audio is available) is edited into the answer with the rating buttons,
+then into the result, so a session does not flood the chat.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import fsrs
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InaccessibleMessage, Message
+from aiogram.types import (
+    CallbackQuery,
+    ForceReply,
+    InlineKeyboardMarkup,
+    Message,
+    ReactionTypeEmoji,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.bot.render import (
@@ -24,15 +37,26 @@ from greek_trainer.bot.render import (
     question_text,
     rating_keyboard,
     show_answer_keyboard,
+    word_text,
 )
-from greek_trainer.bot.tts import send_pronunciation
+from greek_trainer.bot.tts import send_voice
 from greek_trainer.config import Settings
 from greek_trainer.db.models import Card, CardType, User
-from greek_trainer.domain.greek import check_answer
+from greek_trainer.domain.greek import Verdict, check_answer, check_translation
 from greek_trainer.domain.srs import preview_intervals
 from greek_trainer.services import get_card, next_card, next_due_at, record_review
 
 router = Router(name="review")
+
+# Telegram limits media captions; longer answers go as a separate text message.
+CAPTION_LIMIT = 1024
+# Telegram's public "confetti" message effect, private chats only.
+CONFETTI_EFFECT_ID = "5046509860389126442"
+REACTIONS = {
+    Verdict.CORRECT: "👍",
+    Verdict.ACCENT_ONLY: "🤔",
+    Verdict.WRONG: "👎",
+}
 
 
 class Review(StatesGroup):
@@ -45,6 +69,115 @@ def _pronounced_text(card: Card) -> str:
         assert card.example is not None
         return card.example.text_el
     return card.word.lemma
+
+
+async def _send_card(
+    bot: Bot,
+    session: AsyncSession,
+    chat_id: int,
+    spoken: str,
+    text: str,
+    markup: InlineKeyboardMarkup | None,
+    voice: str,
+) -> tuple[Message, bool]:
+    """Voice message with `text` as caption; plain text when audio fails.
+
+    Returns the message and whether its text lives in a caption.
+    """
+    if len(text) <= CAPTION_LIMIT:
+        sent = await send_voice(
+            bot, session, chat_id, spoken, voice, caption=text, reply_markup=markup
+        )
+        if sent is not None:
+            return sent, True
+    else:
+        await send_voice(bot, session, chat_id, spoken, voice)
+    return await bot.send_message(chat_id, text, reply_markup=markup), False
+
+
+def _already_applied(err: TelegramBadRequest) -> bool:
+    """A repeated tap or a Telegram retry: the message already shows this text."""
+    return "message is not modified" in err.message
+
+
+async def _edit_card(
+    message: Message, text: str, markup: InlineKeyboardMarkup | None
+) -> bool:
+    """Edit the card in place; False means the caller must send `text` anew."""
+    is_caption = message.voice is not None
+    if is_caption and len(text) > CAPTION_LIMIT:
+        return False
+    try:
+        if is_caption:
+            await message.edit_caption(caption=text, reply_markup=markup)
+        else:
+            await message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest as err:
+        return _already_applied(err)
+    return True
+
+
+async def _replace_card(
+    bot: Bot, message: Message, text: str, markup: InlineKeyboardMarkup | None
+) -> None:
+    """Show `text` on the card; if it can't be edited, retire its buttons and resend."""
+    if await _edit_card(message, text, markup):
+        return
+    try:
+        await message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    await bot.send_message(message.chat.id, text, reply_markup=markup)
+
+
+async def _edit_card_by_id(
+    bot: Bot,
+    chat_id: int,
+    data: dict[str, Any],
+    text: str,
+    markup: InlineKeyboardMarkup | None,
+) -> bool:
+    """Like `_edit_card` for the question message remembered in FSM data."""
+    message_id = data.get("card_message_id")
+    if message_id is None:
+        return False
+    is_caption = bool(data.get("card_has_caption"))
+    if is_caption and len(text) > CAPTION_LIMIT:
+        return False
+    try:
+        if is_caption:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=text,
+                reply_markup=markup,
+            )
+        else:
+            await bot.edit_message_text(
+                text, chat_id=chat_id, message_id=message_id, reply_markup=markup
+            )
+    except TelegramBadRequest as err:
+        return _already_applied(err)
+    return True
+
+
+async def _drop_markup_by_id(bot: Bot, chat_id: int, data: dict[str, Any]) -> None:
+    message_id = data.get("card_message_id")
+    if message_id is None:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=message_id, reply_markup=None
+        )
+    except TelegramBadRequest:
+        pass
+
+
+async def _react(message: Message, verdict: Verdict) -> None:
+    try:
+        await message.react([ReactionTypeEmoji(emoji=REACTIONS[verdict])])
+    except TelegramBadRequest:
+        pass
 
 
 async def show_next_card(
@@ -64,22 +197,38 @@ async def show_next_card(
         if upcoming is not None:
             local = upcoming.astimezone(ZoneInfo(user.timezone))
             text += f"\nСледующее повторение: {local:%d.%m %H:%M}."
-        await bot.send_message(chat_id, text)
+        try:
+            await bot.send_message(chat_id, text, message_effect_id=CONFETTI_EFFECT_ID)
+        except TelegramBadRequest:
+            await bot.send_message(chat_id, text)
         return
 
-    await state.set_state(Review.waiting_for_answer)
+    # Store the card before sending: synthesis takes seconds, and an answer typed
+    # meanwhile must be checked against this card, not the previous one.
     await state.set_data(
         {"card_id": card.id, "version": card.version, "shown_at": now.isoformat()}
     )
+    await state.set_state(Review.waiting_for_answer)
     if card.card_type is CardType.RECOGNITION:
-        await send_pronunciation(
-            bot, session, chat_id, card.word.lemma, settings.tts_voice
-        )
-        await bot.send_message(
-            chat_id, question_text(card), reply_markup=show_answer_keyboard(card)
+        sent, has_caption = await _send_card(
+            bot,
+            session,
+            chat_id,
+            card.word.lemma,
+            question_text(card),
+            show_answer_keyboard(card),
+            settings.tts_voice,
         )
     else:
-        await bot.send_message(chat_id, question_text(card))
+        sent = await bot.send_message(
+            chat_id,
+            question_text(card),
+            reply_markup=ForceReply(input_field_placeholder="Напиши по-гречески"),
+        )
+        has_caption = False
+    await state.update_data(
+        card_message_id=sent.message_id, card_has_caption=has_caption
+    )
 
 
 @router.message(Command("review"))
@@ -111,6 +260,7 @@ async def next_callback(
 async def show_answer(
     query: CallbackQuery,
     callback_data: ShowAnswer,
+    bot: Bot,
     session: AsyncSession,
     user: User,
     fsrs_scheduler: fsrs.Scheduler,
@@ -120,11 +270,13 @@ async def show_answer(
         await query.answer("Эта карточка уже пройдена.")
         return
     await query.answer()
-    if query.message is not None and not isinstance(query.message, InaccessibleMessage):
+    if isinstance(query.message, Message):
         previews = preview_intervals(fsrs_scheduler, card, datetime.now(UTC))
-        await query.message.edit_text(
+        await _replace_card(
+            bot,
+            query.message,
             answer_text(card, verdict=None, typed=None),
-            reply_markup=rating_keyboard(card, previews),
+            rating_keyboard(card, previews),
         )
 
 
@@ -145,20 +297,30 @@ async def typed_answer(
         await state.clear()
         await message.answer("Карточка устарела, запусти /review заново.")
         return
-    if card.card_type is CardType.RECOGNITION:
-        await message.answer("Нажми «Показать ответ» под карточкой.")
-        return
-
     await state.update_data(answer_text=message.text)
-    verdict = check_answer(message.text, expected_answer(card))
-    await send_pronunciation(
-        bot, session, message.chat.id, _pronounced_text(card), settings.tts_voice
-    )
+    if card.card_type is CardType.RECOGNITION:
+        verdict = check_translation(message.text, card.word.translation)
+    else:
+        verdict = check_answer(message.text, expected_answer(card))
+    await _react(message, verdict)
+
     previews = preview_intervals(fsrs_scheduler, card, datetime.now(UTC))
-    await message.answer(
-        answer_text(card, verdict=verdict, typed=message.text),
-        reply_markup=rating_keyboard(card, previews),
-    )
+    text = answer_text(card, verdict=verdict, typed=message.text)
+    markup = rating_keyboard(card, previews)
+    if card.card_type is CardType.RECOGNITION:
+        if not await _edit_card_by_id(bot, message.chat.id, data, text, markup):
+            await _drop_markup_by_id(bot, message.chat.id, data)
+            await message.answer(text, reply_markup=markup)
+    else:
+        await _send_card(
+            bot,
+            session,
+            message.chat.id,
+            _pronounced_text(card),
+            text,
+            markup,
+            settings.tts_voice,
+        )
 
 
 @router.callback_query(Rate.filter())
@@ -197,10 +359,12 @@ async def rate(
     await session.flush()
     await query.answer()
 
-    if query.message is not None and not isinstance(query.message, InaccessibleMessage):
-        await query.message.edit_reply_markup(reply_markup=None)
-        await query.message.answer(
+    if isinstance(query.message, Message):
+        result = (
             f"{RATING_LABELS[rating]} → следующий раз через "
             f"{format_interval(card.due - now)}"
+        )
+        await _replace_card(
+            bot, query.message, f"{word_text(card.word)}\n\n{result}", None
         )
     await show_next_card(bot, query.from_user.id, state, session, user, settings)

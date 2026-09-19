@@ -7,8 +7,9 @@ import logging
 import aiohttp
 import edge_tts
 from aiogram import Bot
+from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.db.models import TtsCache
@@ -35,25 +36,44 @@ def _file_id(message: Message) -> str | None:
     return media.file_id if media else None
 
 
-async def send_pronunciation(
-    bot: Bot, session: AsyncSession, chat_id: int, text: str, voice: str
-) -> None:
-    """Send `text` as a voice message; audio problems never break a review."""
+async def send_voice(
+    bot: Bot,
+    session: AsyncSession,
+    chat_id: int,
+    text: str,
+    voice: str,
+    caption: str | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> Message | None:
+    """Send `text` as a voice message, optionally with a caption and keyboard.
+
+    Returns None when synthesis or sending fails, so the caller can fall back
+    to plain text; audio problems never break a review.
+    """
     cached = await session.get(TtsCache, (voice, text))
     try:
         if cached is not None:
-            await bot.send_voice(chat_id, cached.telegram_file_id)
-            return
+            return await bot.send_voice(
+                chat_id,
+                cached.telegram_file_id,
+                caption=caption,
+                reply_markup=reply_markup,
+            )
+        await bot.send_chat_action(chat_id, ChatAction.RECORD_VOICE)
         audio = await synthesize(text, voice)
         message = await bot.send_voice(
-            chat_id, BufferedInputFile(audio, filename="greek.mp3")
+            chat_id,
+            BufferedInputFile(audio, filename="greek.mp3"),
+            caption=caption,
+            reply_markup=reply_markup,
         )
     except (edge_tts.exceptions.EdgeTTSException, aiohttp.ClientError) as err:
         log.warning("TTS failed for %r: %s", text, err)
-        return
+        return None
     except TelegramAPIError as err:
         log.warning("Sending pronunciation failed for %r: %s", text, err)
-        return
+        return None
     file_id = _file_id(message)
     if file_id is not None:
         session.add(TtsCache(voice=voice, text=text, telegram_file_id=file_id))
+    return message
