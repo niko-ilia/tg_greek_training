@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import fsrs
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -372,6 +372,12 @@ async def typed_answer(
             markup,
             settings.tts_voice,
         )
+
+
+@router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
+async def stray_text(message: Message) -> None:
+    # FSM state is in memory: after a restart an answer arrives with no card waiting.
+    await message.answer("Сейчас я не жду ответа. Продолжить: /review")
 
 
 @router.callback_query(Rate.filter())

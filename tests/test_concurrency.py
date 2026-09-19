@@ -12,15 +12,17 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from greek_trainer.bot import tts
 from greek_trainer.bot.reminders import send_due_reminders
 from greek_trainer.config import Settings
-from greek_trainer.db.models import User, Word
+from greek_trainer.db.models import TtsCache, User, Word
 from greek_trainer.domain.greek import lemma_key
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.services import add_word, get_or_create_user
 
 TELEGRAM_ID = 987_654_321
 WORD = "το ζάρι\nкубик"
+SPOKEN = "__tts_race__"
 # 19:30 in Nicosia (UTC+3), after the default 19:00 reminder.
 EVENING = datetime(2026, 9, 19, 16, 30, tzinfo=UTC)
 
@@ -35,6 +37,7 @@ async def factory(
         await session.execute(delete(User).where(User.telegram_id == TELEGRAM_ID))
         key = lemma_key(parse_word(WORD).lemma)
         await session.execute(delete(Word).where(Word.lemma_key == key))
+        await session.execute(delete(TtsCache).where(TtsCache.text == SPOKEN))
 
 
 async def test_two_first_updates_create_one_learner(
@@ -76,3 +79,24 @@ async def test_a_learner_busy_in_the_bot_does_not_stall_reminders(
 
     await send_due_reminders(bot, factory, EVENING)
     bot.send_message.assert_awaited_once()
+
+
+async def test_two_learners_caching_the_same_audio_both_commit(
+    factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tts, "synthesize", AsyncMock(return_value=b"mp3"))
+    both_sending = asyncio.Barrier(2)
+
+    async def send_voice(chat_id: int, voice: object, **kwargs: object) -> MagicMock:
+        await both_sending.wait()  # both have missed the cache before either stores
+        return MagicMock(voice=MagicMock(file_id=f"file-{chat_id}"))
+
+    bot = MagicMock(send_chat_action=AsyncMock(), send_voice=send_voice)
+
+    async def learner(chat_id: int) -> None:
+        async with factory() as session, session.begin():
+            await tts.send_voice(bot, session, chat_id, SPOKEN, "el-GR-AthinaNeural")
+
+    await asyncio.wait_for(asyncio.gather(learner(1), learner(2)), timeout=5)
+    async with factory() as session:
+        assert await session.get(TtsCache, ("el-GR-AthinaNeural", SPOKEN)) is not None
