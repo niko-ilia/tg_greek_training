@@ -1,6 +1,11 @@
 import pytest
 
-from greek_trainer.domain.greek import Verdict, check_answer, lemma_key
+from greek_trainer.domain.greek import (
+    Verdict,
+    check_answer,
+    check_translation,
+    lemma_key,
+)
 
 
 @pytest.mark.parametrize(
@@ -16,6 +21,24 @@ from greek_trainer.domain.greek import Verdict, check_answer, lemma_key
 )
 def test_check_answer(given: str, verdict: Verdict) -> None:
     assert check_answer(given, "ξέρω") is verdict
+
+
+@pytest.mark.parametrize(
+    ("given", "verdict"),
+    [
+        ("знать", Verdict.CORRECT),
+        ("Уметь.", Verdict.CORRECT),
+        ("ЗНАТЬ", Verdict.CORRECT),
+        ("знать, уметь", Verdict.WRONG),
+        ("", Verdict.WRONG),
+    ],
+)
+def test_check_translation(given: str, verdict: Verdict) -> None:
+    assert check_translation(given, "знать; уметь") is verdict
+
+
+def test_check_translation_ignores_yo() -> None:
+    assert check_translation("мед", "мёд") is Verdict.CORRECT
 
 
 def test_check_answer_final_sigma_and_article() -> None:

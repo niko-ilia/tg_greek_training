@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import fsrs
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -28,7 +30,7 @@ from greek_trainer.bot.render import (
 from greek_trainer.bot.tts import send_pronunciation
 from greek_trainer.config import Settings
 from greek_trainer.db.models import Card, CardType, User
-from greek_trainer.domain.greek import check_answer
+from greek_trainer.domain.greek import check_answer, check_translation
 from greek_trainer.domain.srs import preview_intervals
 from greek_trainer.services import get_card, next_card, next_due_at, record_review
 
@@ -68,18 +70,33 @@ async def show_next_card(
         return
 
     await state.set_state(Review.waiting_for_answer)
-    await state.set_data(
-        {"card_id": card.id, "version": card.version, "shown_at": now.isoformat()}
-    )
+    data = {"card_id": card.id, "version": card.version, "shown_at": now.isoformat()}
     if card.card_type is CardType.RECOGNITION:
         await send_pronunciation(
             bot, session, chat_id, card.word.lemma, settings.tts_voice
         )
-        await bot.send_message(
+        question = await bot.send_message(
             chat_id, question_text(card), reply_markup=show_answer_keyboard(card)
         )
+        data["question_message_id"] = question.message_id
     else:
         await bot.send_message(chat_id, question_text(card))
+    await state.set_data(data)
+
+
+async def _drop_show_answer_button(
+    bot: Bot, chat_id: int, data: dict[str, Any]
+) -> None:
+    """The typed answer replaces the button; a stale one would only say "already done"."""
+    message_id = data.get("question_message_id")
+    if message_id is None:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=message_id, reply_markup=None
+        )
+    except TelegramBadRequest:
+        pass
 
 
 @router.message(Command("review"))
@@ -145,15 +162,15 @@ async def typed_answer(
         await state.clear()
         await message.answer("Карточка устарела, запусти /review заново.")
         return
-    if card.card_type is CardType.RECOGNITION:
-        await message.answer("Нажми «Показать ответ» под карточкой.")
-        return
-
     await state.update_data(answer_text=message.text)
-    verdict = check_answer(message.text, expected_answer(card))
-    await send_pronunciation(
-        bot, session, message.chat.id, _pronounced_text(card), settings.tts_voice
-    )
+    if card.card_type is CardType.RECOGNITION:
+        verdict = check_translation(message.text, card.word.translation)
+        await _drop_show_answer_button(bot, message.chat.id, data)
+    else:
+        verdict = check_answer(message.text, expected_answer(card))
+        await send_pronunciation(
+            bot, session, message.chat.id, _pronounced_text(card), settings.tts_voice
+        )
     previews = preview_intervals(fsrs_scheduler, card, datetime.now(UTC))
     await message.answer(
         answer_text(card, verdict=verdict, typed=message.text),

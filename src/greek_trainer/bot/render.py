@@ -70,7 +70,9 @@ def cloze_sentence(example: Example) -> str:
 
 
 def expected_answer(card: Card) -> str:
-    """The Greek text the learner must type for a recall or cloze card."""
+    """What the learner must type: the translation, the lemma or the cloze form."""
+    if card.card_type is CardType.RECOGNITION:
+        return card.word.translation
     if card.card_type is CardType.CLOZE:
         assert card.example is not None and card.example.cloze_target is not None
         return card.example.cloze_target
@@ -80,7 +82,10 @@ def expected_answer(card: Card) -> str:
 def question_text(card: Card) -> str:
     word = card.word
     if card.card_type is CardType.RECOGNITION:
-        return f"🇬🇷 <b>{escape(word.lemma)}</b>\n\nЧто это значит?"
+        return (
+            f"🇬🇷 <b>{escape(word.lemma)}</b>\n\n"
+            "Что это значит? Напиши перевод или нажми «Показать ответ»."
+        )
     if card.card_type is CardType.RECALL:
         return f"🇷🇺 <b>{escape(word.translation)}</b>\n\nНапиши по-гречески."
     assert card.example is not None
