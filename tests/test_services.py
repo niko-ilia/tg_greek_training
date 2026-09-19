@@ -11,10 +11,13 @@ from greek_trainer.domain.srs import build_scheduler
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.errors import DuplicateWordError
 from greek_trainer.services import (
+    LEARN_AHEAD,
     add_word,
+    allow_more_new_cards,
     deal_missing_cards,
     get_or_create_user,
     get_stats,
+    new_card_allowance,
     next_card,
     record_review,
 )
@@ -132,3 +135,42 @@ async def test_record_review_logs_and_bumps_version(
     stats = await get_stats(session, user, NOW)
     assert (stats.words, stats.cards, stats.reviewed_today) == (1, 2, 1)
     assert stats.retention_30d is None
+
+
+async def test_more_new_cards_lifts_todays_limit_once_per_tap(
+    session: AsyncSession, user: User
+) -> None:
+    user.daily_new_cards = 1
+    await add_word(session, parse_word("ναι\nда"))
+    await add_word(session, parse_word("όχι\nнет"))
+    await deal_missing_cards(session, user, NOW)
+    first = await next_card(session, user, NOW)
+    assert first is not None
+    record_review(session, SCHEDULER, first, fsrs.Rating.Easy, NOW)
+    await session.flush()
+    assert await next_card(session, user, NOW) is None
+    assert await next_card(session, user, NOW, ignore_new_limit=True) is not None
+
+    assert await allow_more_new_cards(session, user, 0, NOW)
+    assert not await allow_more_new_cards(session, user, 0, NOW)  # double tap
+    card = await next_card(session, user, NOW)
+    assert card is not None and card.word.lemma == "όχι"
+
+    # The extra portion belongs to one learning day only.
+    tomorrow = NOW + timedelta(days=1)
+    assert new_card_allowance(user, (tomorrow).date()) == 1
+
+
+async def test_a_learning_step_due_soon_is_shown_instead_of_waiting(
+    session: AsyncSession, user: User
+) -> None:
+    await _add(session, user, "ναι\nда")
+    card = await next_card(session, user, NOW)
+    assert card is not None
+    record_review(session, SCHEDULER, card, fsrs.Rating.Good, NOW)
+    await session.flush()
+    assert card.due > NOW  # the next learning step is minutes away
+
+    early = await next_card(session, user, NOW + timedelta(minutes=1))
+    assert early is not None and early.id == card.id
+    assert card.due - (NOW + timedelta(minutes=1)) <= LEARN_AHEAD

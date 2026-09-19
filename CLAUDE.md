@@ -58,6 +58,10 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   rejects double taps and stale buttons. A skipped word is not offered again.
 - Handlers that take free text in an FSM state must exclude commands
   (`~F.text.startswith("/")`), or `/review` and friends get parsed as input.
+- Daily new-card allowance = `daily_new_cards` + `extra_new_cards` when `extra_new_cards_on`
+  is today's learning day ("Ещё N новых слов" button, a conditional UPDATE keyed on the extra
+  the button showed). When nothing is due, `next_card` shows a learning step due within
+  `LEARN_AHEAD` (20 min, as in Anki); review-state cards are never pulled forward.
 - Sibling burying: once any card of a word is reviewed today the word's other cards wait.
   The learning day rolls over at 04:00 local. Learning steps of the same card are not blocked.
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by

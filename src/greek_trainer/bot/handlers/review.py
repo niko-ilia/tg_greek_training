@@ -28,12 +28,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.bot.render import (
     RATING_LABELS,
+    MoreNew,
     NextCard,
     Rate,
     ShowAnswer,
     answer_text,
     expected_answer,
     format_interval,
+    more_new_keyboard,
     question_text,
     rating_keyboard,
     show_answer_keyboard,
@@ -43,8 +45,14 @@ from greek_trainer.bot.tts import send_voice
 from greek_trainer.config import Settings
 from greek_trainer.db.models import Card, CardType, User
 from greek_trainer.domain.greek import Verdict, check_answer, check_translation
-from greek_trainer.domain.srs import preview_intervals
-from greek_trainer.services import get_card, next_card, next_due_at, record_review
+from greek_trainer.domain.srs import learning_day_start, preview_intervals
+from greek_trainer.services import (
+    allow_more_new_cards,
+    get_card,
+    next_card,
+    next_due_at,
+    record_review,
+)
 
 router = Router(name="review")
 
@@ -193,10 +201,21 @@ async def show_next_card(
     if card is None:
         await state.clear()
         upcoming = await next_due_at(session, user)
-        text = "🎉 На сейчас всё повторено."
+        held_back = await next_card(session, user, now, ignore_new_limit=True)
+        text = (
+            "✅ Дневная порция новых слов пройдена."
+            if held_back is not None
+            else "🎉 На сейчас всё повторено."
+        )
         if upcoming is not None:
             local = upcoming.astimezone(ZoneInfo(user.timezone))
             text += f"\nСледующее повторение: {local:%d.%m %H:%M}."
+        if held_back is not None:
+            day = learning_day_start(now, user.timezone).date()
+            await bot.send_message(
+                chat_id, text, reply_markup=more_new_keyboard(user, day)
+            )
+            return
         try:
             await bot.send_message(chat_id, text, message_effect_id=CONFETTI_EFFECT_ID)
         except TelegramBadRequest:
@@ -253,6 +272,30 @@ async def next_callback(
     settings: Settings,
 ) -> None:
     await query.answer()
+    await show_next_card(bot, query.from_user.id, state, session, user, settings)
+
+
+@router.callback_query(MoreNew.filter())
+async def more_new(
+    query: CallbackQuery,
+    callback_data: MoreNew,
+    bot: Bot,
+    state: FSMContext,
+    session: AsyncSession,
+    user: User,
+    settings: Settings,
+) -> None:
+    now = datetime.now(UTC)
+    if not await allow_more_new_cards(session, user, callback_data.extra, now):
+        await query.answer("Уже добавлено.")
+        return
+    await session.flush()
+    await query.answer(f"+{user.daily_new_cards} новых слов на сегодня")
+    if isinstance(query.message, Message):
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
     await show_next_card(bot, query.from_user.id, state, session, user, settings)
 
 

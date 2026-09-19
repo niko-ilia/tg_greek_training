@@ -1,4 +1,4 @@
-"""public bot: user profile, usage_events
+"""public bot: user profile, usage_events, extra new cards
 
 Revision ID: 0004
 Revises: 0003
@@ -23,6 +23,10 @@ _USER_COLUMNS = [
     sa.Column("language_code", sa.String(length=16), nullable=True),
     sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("blocked_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "extra_new_cards", sa.Integer(), server_default=sa.text("0"), nullable=False
+    ),
+    sa.Column("extra_new_cards_on", sa.Date(), nullable=True),
 ]
 
 

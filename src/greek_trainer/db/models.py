@@ -52,6 +52,9 @@ class User(Base):
     timezone: Mapped[str] = mapped_column(String(64))
     reminder_time: Mapped[time | None] = mapped_column(Time)
     daily_new_cards: Mapped[int] = mapped_column(Integer)
+    # "More new words" for one learning day: extra_new_cards counts only on extra_new_cards_on.
+    extra_new_cards: Mapped[int] = mapped_column(Integer, server_default="0")
+    extra_new_cards_on: Mapped[date | None] = mapped_column(Date)
     last_reminded_on: Mapped[date | None] = mapped_column(Date)
     # Highest word id answered in /check ("know" or "learn"); the next pass continues after it.
     check_cursor: Mapped[int | None] = mapped_column(Integer)

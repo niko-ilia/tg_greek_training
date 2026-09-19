@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import fsrs
 from sqlalchemy import (
@@ -174,13 +174,57 @@ async def _new_cards_started(session: AsyncSession, user: User, since: datetime)
     return (await session.scalar(stmt)) or 0
 
 
-async def next_card(session: AsyncSession, user: User, now: datetime) -> Card | None:
-    """Pick the next due card.
+# Like Anki's "learn ahead limit": when nothing is due, a learning step that is
+# due this soon is shown now rather than making the learner wait.
+LEARN_AHEAD = timedelta(minutes=20)
+
+
+def new_card_allowance(user: User, day: date) -> int:
+    extra = user.extra_new_cards if user.extra_new_cards_on == day else 0
+    return user.daily_new_cards + extra
+
+
+async def allow_more_new_cards(
+    session: AsyncSession, user: User, expected_extra: int, now: datetime
+) -> bool:
+    """Add one more daily portion of new cards for today's learning day.
+
+    `expected_extra` is the extra the learner saw on the button; the conditional
+    UPDATE rejects a double tap or a stale button instead of adding twice.
+    """
+    day = learning_day_start(now, user.timezone).date()
+    extra_today = case((User.extra_new_cards_on == day, User.extra_new_cards), else_=0)
+    granted = await session.scalar(
+        update(User)
+        .where(User.id == user.id, extra_today == expected_extra)
+        .values(
+            extra_new_cards=expected_extra + user.daily_new_cards,
+            extra_new_cards_on=day,
+        )
+        .returning(User.extra_new_cards)
+    )
+    if granted is None:
+        return False
+    user.extra_new_cards, user.extra_new_cards_on = granted, day
+    return True
+
+
+async def next_card(
+    session: AsyncSession,
+    user: User,
+    now: datetime,
+    *,
+    ignore_new_limit: bool = False,
+) -> Card | None:
+    """Pick the next card to show.
 
     Order: cards already in learning steps, then reviews by due date, then new
     cards in the order words were added. Siblings are buried: once any card of a
     word was reviewed today, the word's other cards wait until tomorrow, so
-    recognition does not give away the answer to the recall drill.
+    recognition does not give away the answer to the recall drill. When nothing
+    is due, a learning step due within `LEARN_AHEAD` is shown early.
+
+    `ignore_new_limit` answers "would a new card come if the limit allowed it".
     """
     day_start = learning_day_start(now, user.timezone)
     sibling = aliased(Card)
@@ -197,7 +241,7 @@ async def next_card(session: AsyncSession, user: User, now: datetime) -> Card | 
     is_new = Card.last_review.is_(None)
     stmt = (
         select(Card)
-        .where(Card.user_id == user.id, Card.due <= now, ~sibling_reviewed_today)
+        .where(Card.user_id == user.id, ~sibling_reviewed_today)
         .options(selectinload(Card.word).selectinload(Word.examples))
         .options(selectinload(Card.example))
         .order_by(
@@ -212,9 +256,18 @@ async def next_card(session: AsyncSession, user: User, now: datetime) -> Card | 
         )
         .limit(1)
     )
-    if await _new_cards_started(session, user, day_start) >= user.daily_new_cards:
+    allowance = new_card_allowance(user, day_start.date())
+    if not ignore_new_limit and (
+        await _new_cards_started(session, user, day_start) >= allowance
+    ):
         stmt = stmt.where(~is_new)
-    return await session.scalar(stmt)
+    card = await session.scalar(stmt.where(Card.due <= now))
+    if card is not None or ignore_new_limit:
+        return card
+    in_learning = Card.last_review.is_not(None) & (
+        Card.state != fsrs.State.Review.value
+    )
+    return await session.scalar(stmt.where(in_learning, Card.due <= now + LEARN_AHEAD))
 
 
 async def next_due_at(session: AsyncSession, user: User) -> datetime | None:

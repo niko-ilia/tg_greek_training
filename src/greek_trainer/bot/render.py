@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from html import escape
 
 import fsrs
@@ -42,6 +42,19 @@ class Rate(CallbackData, prefix="rate"):
 
 class NextCard(CallbackData, prefix="next"):
     pass
+
+
+class MoreNew(CallbackData, prefix="more"):
+    extra: int
+
+
+def more_new_keyboard(user: User, day: date) -> InlineKeyboardMarkup:
+    extra = user.extra_new_cards if user.extra_new_cards_on == day else 0
+    data = MoreNew(extra=extra).pack()
+    text = f"Ещё {user.daily_new_cards} новых слов"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=data)]]
+    )
 
 
 class Check(CallbackData, prefix="check"):
