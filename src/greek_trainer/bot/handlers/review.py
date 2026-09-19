@@ -27,6 +27,7 @@ from aiogram.types import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.bot.render import (
+    EXERCISE_MARKS,
     RATING_LABELS,
     NextCard,
     PaceOverride,
@@ -415,6 +416,9 @@ async def rate(
             f"{format_interval(card.due - now)}"
         )
         await _replace_card(
-            bot, query.message, f"{word_text(card.word)}\n\n{result}", None
+            bot,
+            query.message,
+            f"{word_text(card.word, EXERCISE_MARKS[card.card_type])}\n\n{result}",
+            None,
         )
     await show_next_card(bot, query.from_user.id, state, session, user, settings)

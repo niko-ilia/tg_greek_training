@@ -123,25 +123,35 @@ def expected_answer(card: Card) -> str:
     return card.word.lemma
 
 
+# One mark per exercise, kept on the card's message from question to result.
+EXERCISE_MARKS = {
+    CardType.RECOGNITION: "🇬🇷",
+    CardType.RECALL: "🇷🇺",
+    CardType.CLOZE: "🧩",
+}
+
+
 def question_text(card: Card) -> str:
     word = card.word
+    mark = EXERCISE_MARKS[card.card_type]
     if card.card_type is CardType.RECOGNITION:
         return (
-            f"🇬🇷 <b>{escape(word.lemma)}</b>\n\n"
+            f"{mark} <b>{escape(word.lemma)}</b>\n\n"
             "Что это значит? Напиши перевод или нажми «Показать ответ»."
         )
     if card.card_type is CardType.RECALL:
-        return f"🇷🇺 <b>{escape(word.translation)}</b>\n\nНапиши по-гречески."
+        return f"{mark} <b>{escape(word.translation)}</b>\n\nНапиши по-гречески."
     assert card.example is not None
     return (
-        f"🧩 {escape(cloze_sentence(card.example))}\n"
+        f"{mark} {escape(cloze_sentence(card.example))}\n"
         f"<i>{escape(card.example.text_ru)}</i>\n\n"
         f"Впиши пропущенное слово ({escape(word.translation)})."
     )
 
 
-def word_text(word: Word) -> str:
-    lines = [f"<b>{escape(word.lemma)}</b> – {escape(word.translation)}"]
+def word_text(word: Word, mark: str | None = None) -> str:
+    title = f"<b>{escape(word.lemma)}</b> – {escape(word.translation)}"
+    lines = [f"{mark} {title}" if mark else title]
     if word.notes:
         lines.append(f"<i>{escape(word.notes)}</i>")
     for example in word.examples:
@@ -150,7 +160,8 @@ def word_text(word: Word) -> str:
 
 
 def answer_text(card: Card, verdict: Verdict | None, typed: str | None) -> str:
-    parts = []
+    """The word first, as on the question, then the verdict just above the buttons."""
+    parts = [word_text(card.word, EXERCISE_MARKS[card.card_type])]
     if verdict is not None:
         parts.append(VERDICT_TEXT[verdict])
         if verdict is not Verdict.CORRECT and typed is not None:
@@ -158,7 +169,6 @@ def answer_text(card: Card, verdict: Verdict | None, typed: str | None) -> str:
                 f"Твой ответ: {escape(typed)}\n"
                 f"Правильно: <b>{escape(expected_answer(card))}</b>"
             )
-    parts.append(word_text(card.word))
     parts.append("Насколько легко было вспомнить?")
     return "\n\n".join(parts)
 
