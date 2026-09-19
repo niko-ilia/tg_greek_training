@@ -11,7 +11,8 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - Tests: `.venv/bin/python -m pytest -q`
 - Gates: `.venv/bin/ruff format --check . && .venv/bin/ruff check . && .venv/bin/mypy`
 - Run: `.venv/bin/alembic upgrade head && .venv/bin/python -m greek_trainer`
-- Seed words: `.venv/bin/python -m greek_trainer.seed seeds/a1.txt` (idempotent)
+- Seed words: `.venv/bin/python -m greek_trainer.seed seeds/*.txt` (idempotent). The Docker CMD
+  runs it before the bot, so every file in `seeds/` is live after the next deploy.
 - Deps: edit `requirements*.txt` (direct pins), then regenerate the lock:
   `uv pip compile requirements.txt --generate-hashes --python-version 3.12 -o requirements.lock`
   (same for `-dev`). Never edit `*.lock` by hand.
@@ -55,6 +56,8 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by
   word, then card type (recognition before recall).
 - One DB transaction per Telegram update; handlers receive `session` and `user`.
+- Deploy: Coolify app `greek-trainer-bot` builds `main` on push (watch paths include `seeds/**`);
+  env vars live in Coolify, never in the repo.
 - Bot messages use HTML parse mode: pass every user- or dictionary-supplied string through
   `html.escape` (see `render.py`).
 - Settings from `.env` are copied to a `users` row on first contact; later changes to `.env`

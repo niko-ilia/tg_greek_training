@@ -16,4 +16,4 @@ ENV PYTHONPATH=/app/src PYTHONUNBUFFERED=1
 RUN groupadd -g 1000 appuser && useradd -u 1000 -g appuser appuser
 USER appuser
 
-CMD ["sh", "-c", "alembic upgrade head && python -m greek_trainer"]
+CMD ["sh", "-c", "alembic upgrade head && python -m greek_trainer.seed seeds/*.txt && python -m greek_trainer"]

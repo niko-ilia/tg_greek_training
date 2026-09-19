@@ -1,4 +1,4 @@
-"""Bulk-import words from a text file: `python -m greek_trainer.seed seeds/a1.txt`.
+"""Bulk-import words from text files: `python -m greek_trainer.seed seeds/*.txt`.
 
 Words already in the dictionary are skipped, so a seed file can be re-run.
 """
@@ -16,11 +16,11 @@ from greek_trainer.errors import DuplicateWordError
 from greek_trainer.services import add_word
 
 
-async def seed(path: Path) -> None:
+async def seed(paths: list[Path]) -> None:
     settings = load_settings()
     engine = create_engine(settings.database_url)
     session_factory = create_session_factory(engine)
-    drafts = parse_words(path.read_text(encoding="utf-8"))
+    drafts = [d for p in paths for d in parse_words(p.read_text(encoding="utf-8"))]
     try:
         async with session_factory() as session, session.begin():
             for draft in drafts:
@@ -36,6 +36,6 @@ async def seed(path: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: python -m greek_trainer.seed <file>")
-    asyncio.run(seed(Path(sys.argv[1])))
+    if len(sys.argv) < 2:
+        sys.exit("usage: python -m greek_trainer.seed <file>...")
+    asyncio.run(seed([Path(arg) for arg in sys.argv[1:]]))
