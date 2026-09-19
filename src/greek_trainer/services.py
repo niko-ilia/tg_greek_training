@@ -49,17 +49,29 @@ from greek_trainer.errors import DuplicateWordError
 async def get_or_create_user(
     session: AsyncSession, telegram_id: int, settings: Settings
 ) -> User:
-    user = await session.scalar(select(User).where(User.telegram_id == telegram_id))
-    if user is None:
-        user = User(
+    """Find the learner by Telegram id, creating them on first contact.
+
+    A new learner's first tap arrives as two concurrent updates (chat status and
+    /start); ON CONFLICT DO NOTHING lets the second one wait for the first and
+    reuse its row instead of failing on the unique key.
+    """
+    by_id = select(User).where(User.telegram_id == telegram_id)
+    user = await session.scalar(by_id)
+    if user is not None:
+        return user
+    await session.execute(
+        insert(User)
+        .values(
             telegram_id=telegram_id,
             timezone=settings.timezone,
             reminder_time=settings.reminder_time,
             daily_new_words=settings.daily_new_words,
             daily_review_budget=settings.daily_review_budget,
         )
-        session.add(user)
-        await session.flush()
+        .on_conflict_do_nothing(index_elements=[User.telegram_id])
+    )
+    user = await session.scalar(by_id)
+    assert user is not None
     return user
 
 
@@ -300,6 +312,7 @@ async def next_card(
     now: datetime,
     *,
     ignore_pace: bool = False,
+    learn_ahead: bool = True,
 ) -> Card | None:
     """Pick the next card to show.
 
@@ -311,7 +324,8 @@ async def next_card(
     the answer to the recall drill. When nothing is due, a learning step due
     within `LEARN_AHEAD` is shown early.
 
-    `ignore_pace` answers "would a new card come if the pace allowed it".
+    `ignore_pace` answers "would a new card come if the pace allowed it";
+    `learn_ahead=False` answers "is anything due right now".
     """
     day_start = learning_day_start(now, user.timezone)
     sibling = aliased(Card)
@@ -359,7 +373,7 @@ async def next_card(
             new_cards = stmt.where(is_new, Card.due <= now, word_started)
     if new_cards is not None:
         card = await session.scalar(new_cards)
-    if card is not None or ignore_pace:
+    if card is not None or ignore_pace or not learn_ahead:
         return card
 
     in_learning = Card.last_review.is_not(None) & (

@@ -27,17 +27,19 @@ async def _claim_reminder(
 ) -> tuple[int, str] | None:
     """Mark today's reminder as sent and return (chat id, text), or None if not due.
 
-    The row lock makes a second reminder loop (two containers during a rolling
-    update) wait here and then see the reminder already claimed.
+    SKIP LOCKED: a row locked by the learner's own update in progress (they are
+    in the bot right now) or by a second reminder loop (two containers during a
+    rolling update) is left for the next minute instead of stalling everyone
+    after them.
     """
-    user = await session.get(User, user_id, with_for_update=True)
+    user = await session.get(User, user_id, with_for_update={"skip_locked": True})
     if user is None or user.reminder_time is None or user.blocked_at is not None:
         return None
     local = now.astimezone(ZoneInfo(user.timezone))
     if user.last_reminded_on == local.date() or local.time() < user.reminder_time:
         return None
     await deal_missing_cards(session, user, now)
-    if await next_card(session, user, now) is None:
+    if await next_card(session, user, now, learn_ahead=False) is None:
         return None
     user.last_reminded_on = local.date()
     due = await due_count(session, user, now)

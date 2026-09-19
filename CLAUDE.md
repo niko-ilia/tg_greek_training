@@ -80,6 +80,12 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   most once, never repeated); `TelegramForbiddenError` sets `blocked_at`.
 - Code that commits on its own (reminders) takes a session factory; tests pass the
   `session_factory` fixture, whose commits become savepoints of the per-test rollback.
+- Races need real transactions: `tests/test_concurrency.py` commits for real and deletes its
+  rows afterwards. Derive cleanup keys with `lemma_key()`, a leaked row breaks every later test.
+- `get_or_create_user` inserts with ON CONFLICT DO NOTHING: a new learner's first tap arrives
+  as two concurrent updates (`my_chat_member` + `/start`).
+- The reminder claim locks the user row with SKIP LOCKED: a learner mid-update is retried next
+  minute, never waited on. It checks cards due now only, without learn-ahead.
 - One message per card: the question is a voice message with the text as caption (raw HTML
   under 1024 chars, otherwise plain text), edited in place into the answer and then the result.
   FSM data keeps `card_message_id` and `card_has_caption` for that. `/check` edits one message

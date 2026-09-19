@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import fsrs
 import pytest
 from aiogram.exceptions import TelegramForbiddenError, TelegramNetworkError
 from aiogram.types import Update
@@ -11,8 +12,19 @@ from greek_trainer.bot.middlewares import describe_update
 from greek_trainer.bot.reminders import send_due_reminders
 from greek_trainer.config import Settings
 from greek_trainer.db.models import UsageEvent, User
+from greek_trainer.domain.srs import build_scheduler
 from greek_trainer.domain.word_input import parse_word
-from greek_trainer.services import Visit, add_word, get_or_create_user, record_visit
+from greek_trainer.services import (
+    Visit,
+    add_word,
+    deal_missing_cards,
+    get_or_create_user,
+    next_card,
+    record_review,
+    record_visit,
+)
+
+SCHEDULER = build_scheduler(0.9)
 
 # 19:30 in Nicosia (UTC+3), after the default 19:00 reminder.
 EVENING = datetime(2026, 9, 19, 16, 30, tzinfo=UTC)
@@ -137,3 +149,21 @@ async def test_a_failed_send_is_not_retried_every_minute(
     assert bot.send_message.await_count == 1
     await session.refresh(user)
     assert user.last_reminded_on is not None and user.blocked_at is None
+
+
+async def test_no_reminder_for_a_learning_step_that_is_not_due_yet(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+) -> None:
+    await add_word(session, parse_word("ναι\nда"))
+    await deal_missing_cards(session, user, EVENING)
+    card = await next_card(session, user, EVENING)
+    assert card is not None
+    record_review(session, SCHEDULER, card, fsrs.Rating.Good, EVENING)
+    await session.commit()
+    assert card.due > EVENING  # its next learning step is minutes away
+
+    bot = MagicMock(send_message=AsyncMock())
+    await send_due_reminders(bot, session_factory, EVENING)
+    bot.send_message.assert_not_awaited()
