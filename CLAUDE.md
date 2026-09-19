@@ -50,7 +50,10 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - `cards.version` bumps on every review; callback buttons carry it, stale taps are rejected.
 - `review_logs` is append-only history for future FSRS parameter optimization. Never rewrite.
 - `review_logs.state_before IS NULL` marks a card's first review; the daily new-card limit
-  counts these.
+  counts these, except rows with `is_triage` (the "I know it" answer in `/check`, which rates
+  every card of the word Easy).
+- `/check` walks words with no reviewed card in `words.id` order after `users.check_cursor`;
+  both "know" and "learn" move the cursor, so a skipped word is not offered again.
 - Sibling burying: once any card of a word is reviewed today the word's other cards wait.
   The learning day rolls over at 04:00 local. Learning steps of the same card are not blocked.
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by

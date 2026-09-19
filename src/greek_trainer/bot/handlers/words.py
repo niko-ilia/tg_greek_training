@@ -1,4 +1,4 @@
-"""/start, /help, /add, /stats."""
+"""/start, /help, /add, /stats, /settings."""
 
 from __future__ import annotations
 
@@ -11,8 +11,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from greek_trainer.bot.render import next_card_keyboard, stats_text, word_text
+from greek_trainer.bot.render import (
+    next_card_keyboard,
+    settings_text,
+    stats_text,
+    word_text,
+)
 from greek_trainer.db.models import User
+from greek_trainer.domain.settings_input import parse_settings
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.errors import AppError
 from greek_trainer.services import add_word, get_stats
@@ -22,8 +28,10 @@ router = Router(name="words")
 HELP = """<b>Γεια σου!</b> Я помогаю запоминать греческие слова.
 
 /review – повторение (карточки по алгоритму FSRS)
+/check – быстро отметить слова, которые уже знаешь
 /add – добавить слово
 /stats – статистика
+/settings – лимит новых карточек и время напоминания
 
 <b>Формат /add</b>
 <code>ξέρω
@@ -83,6 +91,23 @@ async def _add(message: Message, text: str, session: AsyncSession, user: User) -
         f"{f', пропуски в примерах: {cloze}' if cloze else ''}).",
         reply_markup=next_card_keyboard("Начать повторение"),
     )
+
+
+@router.message(Command("settings"))
+async def settings(message: Message, command: CommandObject, user: User) -> None:
+    if command.args:
+        try:
+            change = parse_settings(command.args)
+        except AppError as err:
+            await message.answer(f"⚠️ {err}")
+            return
+        if change.daily_new_cards is not None:
+            user.daily_new_cards = change.daily_new_cards
+        if change.reminders_off:
+            user.reminder_time = None
+        elif change.reminder_time is not None:
+            user.reminder_time = change.reminder_time
+    await message.answer(settings_text(user))
 
 
 @router.message(Command("stats"))

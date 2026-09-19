@@ -24,7 +24,7 @@ class Settings(DatabaseSettings):
     allowed_telegram_ids: Annotated[frozenset[int], NoDecode, Field(min_length=1)]
     timezone: str = "Europe/Nicosia"
     reminder_time: time = time(19, 0)
-    daily_new_cards: int = 10
+    daily_new_cards: int = 20
     desired_retention: float = 0.9
     tts_voice: str = "el-GR-AthinaNeural"
 

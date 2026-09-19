@@ -14,6 +14,7 @@ from datetime import date, datetime, time
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -27,6 +28,7 @@ from sqlalchemy import (
     Text,
     Time,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -51,6 +53,8 @@ class User(Base):
     reminder_time: Mapped[time | None] = mapped_column(Time)
     daily_new_cards: Mapped[int] = mapped_column(Integer)
     last_reminded_on: Mapped[date | None] = mapped_column(Date)
+    # Last word id shown in /check; the next /check continues after it.
+    check_cursor: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -154,6 +158,8 @@ class ReviewLog(Base):
     # FSRS state before this answer; None means the card was seen for the first time.
     state_before: Mapped[int | None] = mapped_column(SmallInteger)
     answer_text: Mapped[str | None] = mapped_column(Text)
+    # "I already know this word" from /check; excluded from the daily new-card limit.
+    is_triage: Mapped[bool] = mapped_column(Boolean, server_default=false())
 
 
 class TtsCache(Base):
