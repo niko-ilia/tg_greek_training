@@ -35,10 +35,10 @@ from greek_trainer.bot.render import (
     answer_text,
     expected_answer,
     format_interval,
-    pace_keyboard,
     pace_text,
     question_text,
     rating_keyboard,
+    session_end_keyboard,
     show_answer_keyboard,
     word_text,
 )
@@ -48,6 +48,7 @@ from greek_trainer.db.models import Card, CardType, User
 from greek_trainer.domain.greek import Verdict, check_answer, check_translation
 from greek_trainer.domain.srs import preview_intervals
 from greek_trainer.services import (
+    LEARN_AHEAD,
     get_card,
     get_pace,
     next_card,
@@ -203,17 +204,25 @@ async def show_next_card(
     if card is None:
         await state.clear()
         upcoming = await next_due_at(session, user)
-        held_back = await next_card(session, user, now, ignore_pace=True)
-        text = (
-            pace_text(await get_pace(session, user, now))
-            if held_back is not None
-            else "🎉 На сейчас всё повторено."
-        )
-        if upcoming is not None:
+        held_back = await next_card(session, user, now, ignore_pace=True) is not None
+        returns_soon = upcoming is not None and upcoming - now <= LEARN_AHEAD
+        if held_back:
+            text = pace_text(await get_pace(session, user, now))
+        elif returns_soon:
+            text = "⏳ Сейчас повторять нечего, кроме только что пройденных слов."
+        else:
+            text = "🎉 На сейчас всё повторено."
+        if upcoming is not None and returns_soon:
+            text += (
+                f"\nСледующая карточка через {format_interval(upcoming - now)}, "
+                "жми «Дальше», когда будешь готов."
+            )
+        elif upcoming is not None:
             local = upcoming.astimezone(ZoneInfo(user.timezone))
             text += f"\nСледующее повторение: {local:%d.%m %H:%M}."
-        if held_back is not None:
-            await bot.send_message(chat_id, text, reply_markup=pace_keyboard())
+        markup = session_end_keyboard(held_back=held_back, returns_soon=returns_soon)
+        if markup is not None:
+            await bot.send_message(chat_id, text, reply_markup=markup)
             return
         try:
             await bot.send_message(chat_id, text, message_effect_id=CONFETTI_EFFECT_ID)

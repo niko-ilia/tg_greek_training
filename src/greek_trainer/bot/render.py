@@ -53,13 +53,24 @@ class Setting(CallbackData, prefix="set"):
     value: str
 
 
-def pace_keyboard() -> InlineKeyboardMarkup:
-    data = PaceOverride().pack()
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Всё равно дальше", callback_data=data)]
-        ]
-    )
+def session_end_keyboard(
+    *, held_back: bool, returns_soon: bool
+) -> InlineKeyboardMarkup | None:
+    """ "Дальше" asks again once a card is due; "Всё равно дальше" lifts the pace brakes."""
+    rows = []
+    if returns_soon:
+        rows.append(
+            [InlineKeyboardButton(text="Дальше", callback_data=NextCard().pack())]
+        )
+    if held_back:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Всё равно дальше", callback_data=PaceOverride().pack()
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def pace_text(pace: Pace) -> str:

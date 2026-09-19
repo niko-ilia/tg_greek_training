@@ -178,10 +178,14 @@ async def add_word(session: AsyncSession, draft: WordDraft) -> Word:
 # Like Anki's "learn ahead limit": when nothing is due, a learning step that is
 # due this soon is shown now rather than making the learner wait.
 LEARN_AHEAD = timedelta(minutes=20)
+# Unlike Anki's screen, the chat keeps the last answers visible just above, so a
+# card answered this recently is never pulled forward.
+MIN_REPEAT_GAP = timedelta(minutes=3)
 # How far ahead the review forecast looks. A new card rated Good returns in 2-3
 # days, so a forecast of tomorrow alone would not see the load it creates.
 FORECAST_DAYS = 7
-# "Struggling" = at least this many "Забыл" among the last STRUGGLE_WINDOW answers today.
+# "Struggling" = at least this many "Забыл" among the last STRUGGLE_WINDOW answers
+# today on cards seen before; forgetting a word on first sight is just learning it.
 STRUGGLE_WINDOW = 10
 STRUGGLE_AGAIN = 3
 
@@ -268,6 +272,7 @@ async def _struggling(session: AsyncSession, user: User, day_start: datetime) ->
         .where(
             Card.user_id == user.id,
             ReviewLog.is_triage.is_(False),
+            ReviewLog.state_before.is_not(None),
             ReviewLog.reviewed_at >= day_start,
         )
         .order_by(ReviewLog.reviewed_at.desc(), ReviewLog.id.desc())
@@ -322,7 +327,8 @@ async def next_card(
     check. Siblings are buried: once any card of a word was reviewed today, the
     word's other cards wait until tomorrow, so recognition does not give away
     the answer to the recall drill. When nothing is due, a learning step due
-    within `LEARN_AHEAD` is shown early.
+    within `LEARN_AHEAD` is shown early, unless it was answered less than
+    `MIN_REPEAT_GAP` ago.
 
     `ignore_pace` answers "would a new card come if the pace allowed it";
     `learn_ahead=False` answers "is anything due right now".
@@ -379,7 +385,13 @@ async def next_card(
     in_learning = Card.last_review.is_not(None) & (
         Card.state != fsrs.State.Review.value
     )
-    return await session.scalar(stmt.where(in_learning, Card.due <= now + LEARN_AHEAD))
+    return await session.scalar(
+        stmt.where(
+            in_learning,
+            Card.due <= now + LEARN_AHEAD,
+            Card.last_review <= now - MIN_REPEAT_GAP,
+        )
+    )
 
 
 def apply_settings(user: User, change: SettingsChange, now: datetime) -> None:

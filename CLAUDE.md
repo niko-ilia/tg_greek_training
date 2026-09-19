@@ -64,7 +64,9 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   brand-new words also stop at `daily_new_words` (NULL = no ceiling). Due learning and review
   cards are never blocked. "Всё равно дальше" sets `pace_override_on` = today (conditional
   UPDATE). When nothing is due, a learning step due within `LEARN_AHEAD` (20 min, as in Anki)
-  is shown early; review-state cards are never pulled forward.
+  is shown early, but never one answered less than `MIN_REPEAT_GAP` (3 min) ago: in a chat the
+  answer is still visible above. Review-state cards are never pulled forward. The struggle
+  check counts only answers on cards seen before (`state_before IS NOT NULL`).
 - Sibling burying: once any card of a word is reviewed today the word's other cards wait.
   The learning day rolls over at 04:00 local. Learning steps of the same card are not blocked.
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by
