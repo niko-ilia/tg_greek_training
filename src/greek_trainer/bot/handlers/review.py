@@ -48,13 +48,13 @@ from greek_trainer.db.models import Card, CardType, User
 from greek_trainer.domain.greek import Verdict, check_answer, check_translation
 from greek_trainer.domain.srs import preview_intervals
 from greek_trainer.services import (
-    LEARN_AHEAD,
     get_card,
     get_pace,
     next_card,
     next_due_at,
     override_pace_today,
     record_review,
+    repeat_gap_ends_at,
 )
 
 router = Router(name="review")
@@ -203,18 +203,19 @@ async def show_next_card(
     card = await next_card(session, user, now)
     if card is None:
         await state.clear()
-        upcoming = await next_due_at(session, user)
+        upcoming = await next_due_at(session, user, now)
         held_back = await next_card(session, user, now, ignore_pace=True) is not None
-        returns_soon = upcoming is not None and upcoming - now <= LEARN_AHEAD
+        comeback = await repeat_gap_ends_at(session, user, now)
+        returns_soon = comeback is not None
         if held_back:
             text = pace_text(await get_pace(session, user, now))
         elif returns_soon:
             text = "⏳ Сейчас повторять нечего, кроме только что пройденных слов."
         else:
             text = "🎉 На сейчас всё повторено."
-        if upcoming is not None and returns_soon:
+        if comeback is not None:
             text += (
-                f"\nСледующая карточка через {format_interval(upcoming - now)}, "
+                f"\nСледующая карточка через {format_interval(comeback - now)}, "
                 "жми «Дальше», когда будешь готов."
             )
         elif upcoming is not None:
