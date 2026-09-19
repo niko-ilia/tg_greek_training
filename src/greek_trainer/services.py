@@ -78,8 +78,6 @@ async def get_or_create_user(
 
 @dataclass(frozen=True)
 class Visit:
-    """What the bot learned about the learner from one update."""
-
     username: str | None
     first_name: str | None
     last_name: str | None

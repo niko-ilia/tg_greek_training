@@ -157,7 +157,7 @@ async def test_override_lifts_the_brakes_for_today_only(
     assert await next_card(session, user, NOW) is None
 
     assert await override_pace_today(session, user, NOW)
-    assert not await override_pace_today(session, user, NOW)  # double tap
+    assert not await override_pace_today(session, user, NOW)
     card = await next_card(session, user, NOW)
     assert card is not None and card.word.lemma == "όχι"
     assert not (await get_pace(session, user, NOW + timedelta(days=1))).overridden

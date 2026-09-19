@@ -7,6 +7,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import delete, select
@@ -23,8 +24,8 @@ from greek_trainer.services import add_word, get_or_create_user
 TELEGRAM_ID = 987_654_321
 WORD = "το ζάρι\nкубик"
 SPOKEN = "__tts_race__"
-# 19:30 in Nicosia (UTC+3), after the default 19:00 reminder.
-EVENING = datetime(2026, 9, 19, 16, 30, tzinfo=UTC)
+NICOSIA = ZoneInfo("Europe/Nicosia")
+EVENING = datetime(2026, 9, 19, 19, 30, tzinfo=NICOSIA).astimezone(UTC)
 
 
 @pytest.fixture

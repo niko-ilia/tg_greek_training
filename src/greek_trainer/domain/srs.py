@@ -46,7 +46,6 @@ def apply_fsrs(card: Card, scheduled: fsrs.Card) -> None:
 def preview_intervals(
     scheduler: fsrs.Scheduler, card: Card, now: datetime
 ) -> dict[fsrs.Rating, timedelta]:
-    """How far each rating would push the next review, for the rating buttons."""
     previews = {}
     for rating in fsrs.Rating:
         scheduled, _ = scheduler.review_card(to_fsrs(card), rating, review_datetime=now)
