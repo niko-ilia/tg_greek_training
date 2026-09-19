@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 
-from greek_trainer.bot.handlers import review, words
+from greek_trainer.bot.handlers import check, review, words
 from greek_trainer.bot.middlewares import AllowedUsersMiddleware, DbSessionMiddleware
 from greek_trainer.bot.reminders import run_reminders
 from greek_trainer.config import load_settings
@@ -19,8 +19,10 @@ from greek_trainer.domain.srs import build_scheduler
 
 COMMANDS = [
     BotCommand(command="review", description="Повторение"),
+    BotCommand(command="check", description="Отметить знакомые слова"),
     BotCommand(command="add", description="Добавить слово"),
     BotCommand(command="stats", description="Статистика"),
+    BotCommand(command="settings", description="Настройки"),
     BotCommand(command="help", description="Как пользоваться"),
 ]
 
@@ -41,7 +43,7 @@ async def main() -> None:
     )
     dp.update.outer_middleware(AllowedUsersMiddleware(settings.allowed_telegram_ids))
     dp.update.middleware(DbSessionMiddleware(session_factory, settings))
-    dp.include_routers(words.router, review.router)
+    dp.include_routers(words.router, review.router, check.router)
 
     reminders: asyncio.Task[None] | None = None
     try:

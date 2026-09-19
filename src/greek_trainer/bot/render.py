@@ -9,7 +9,7 @@ import fsrs
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from greek_trainer.db.models import Card, CardType, Example, Word
+from greek_trainer.db.models import Card, CardType, Example, User, Word
 from greek_trainer.domain.greek import Verdict
 from greek_trainer.services import Stats
 
@@ -42,6 +42,11 @@ class Rate(CallbackData, prefix="rate"):
 
 class NextCard(CallbackData, prefix="next"):
     pass
+
+
+class Check(CallbackData, prefix="check"):
+    word_id: int
+    action: str
 
 
 def format_interval(delta: timedelta) -> str:
@@ -138,6 +143,34 @@ def next_card_keyboard(text: str = "Дальше") -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=text, callback_data=NextCard().pack())]
         ]
+    )
+
+
+def check_text(word: Word) -> str:
+    return f"🇬🇷 <b>{escape(word.lemma)}</b> – {escape(word.translation)}"
+
+
+def check_keyboard(word: Word) -> InlineKeyboardMarkup:
+    def button(text: str, action: str) -> InlineKeyboardButton:
+        data = Check(word_id=word.id, action=action).pack()
+        return InlineKeyboardButton(text=text, callback_data=data)
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [button("Знаю", "know"), button("Учить", "learn")],
+            [button("Хватит", "stop")],
+        ]
+    )
+
+
+def settings_text(user: User) -> str:
+    reminder = f"{user.reminder_time:%H:%M}" if user.reminder_time else "выключено"
+    return (
+        "⚙️ <b>Настройки</b>\n"
+        f"Новых карточек в день: {user.daily_new_cards}\n"
+        f"Напоминание: {reminder}\n\n"
+        "Изменить: <code>/settings 20</code>, <code>/settings 20 19:30</code>, "
+        "<code>/settings off</code>"
     )
 
 

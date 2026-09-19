@@ -119,6 +119,7 @@ async def _new_cards_started(session: AsyncSession, user: User, since: datetime)
         .where(
             Card.user_id == user.id,
             ReviewLog.state_before.is_(None),
+            ReviewLog.is_triage.is_(False),
             ReviewLog.reviewed_at >= since,
         )
     )
@@ -202,6 +203,7 @@ def record_review(
     now: datetime,
     duration_ms: int | None = None,
     answer_text: str | None = None,
+    is_triage: bool = False,
 ) -> None:
     state_before = None if card.last_review is None else card.state
     scheduled, _ = scheduler.review_card(to_fsrs(card), rating, review_datetime=now)
@@ -215,8 +217,56 @@ def record_review(
             review_duration_ms=duration_ms,
             state_before=state_before,
             answer_text=answer_text,
+            is_triage=is_triage,
         )
     )
+
+
+async def next_unchecked_word(session: AsyncSession, user: User) -> Word | None:
+    """Next word the learner has never reviewed, for /check.
+
+    Continues after `check_cursor`, so words skipped with "learn" are not shown
+    again until the cursor is reset.
+    """
+    seen = exists(
+        select(Card.id).where(
+            Card.word_id == Word.id,
+            Card.user_id == user.id,
+            Card.last_review.is_not(None),
+        )
+    )
+    stmt = select(Word).where(~seen).order_by(Word.id).limit(1)
+    if user.check_cursor is not None:
+        stmt = stmt.where(Word.id > user.check_cursor)
+    return await session.scalar(stmt)
+
+
+async def mark_word_known(
+    session: AsyncSession,
+    scheduler: fsrs.Scheduler,
+    user: User,
+    word: Word,
+    now: datetime,
+) -> bool:
+    """Rate every card of the word Easy, so it returns once as a check-up.
+
+    Returns False when the learner already reviewed any card of the word.
+    """
+    cards = list(
+        await session.scalars(
+            select(Card).where(Card.word_id == word.id, Card.user_id == user.id)
+        )
+    )
+    if any(card.last_review is not None for card in cards):
+        return False
+    for card in cards:
+        record_review(session, scheduler, card, fsrs.Rating.Easy, now, is_triage=True)
+    advance_check(user, word)
+    return True
+
+
+def advance_check(user: User, word: Word) -> None:
+    user.check_cursor = max(user.check_cursor or 0, word.id)
 
 
 @dataclass(frozen=True)
