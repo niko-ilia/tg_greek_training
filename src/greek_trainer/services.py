@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import fsrs
 from sqlalchemy import (
@@ -23,8 +25,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from greek_trainer.config import Settings
-from greek_trainer.db.models import Card, CardType, Example, ReviewLog, User, Word
+from greek_trainer.db.models import (
+    Card,
+    CardType,
+    Example,
+    ReviewLog,
+    UsageEvent,
+    User,
+    Word,
+)
 from greek_trainer.domain.greek import lemma_key
+from greek_trainer.domain.settings_input import SettingsChange
 from greek_trainer.domain.srs import (
     apply_fsrs,
     learning_day_start,
@@ -38,17 +49,59 @@ from greek_trainer.errors import DuplicateWordError
 async def get_or_create_user(
     session: AsyncSession, telegram_id: int, settings: Settings
 ) -> User:
-    user = await session.scalar(select(User).where(User.telegram_id == telegram_id))
-    if user is None:
-        user = User(
+    """Find the learner by Telegram id, creating them on first contact.
+
+    A new learner's first tap arrives as two concurrent updates (chat status and
+    /start); ON CONFLICT DO NOTHING lets the second one wait for the first and
+    reuse its row instead of failing on the unique key.
+    """
+    by_id = select(User).where(User.telegram_id == telegram_id)
+    user = await session.scalar(by_id)
+    if user is not None:
+        return user
+    await session.execute(
+        insert(User)
+        .values(
             telegram_id=telegram_id,
             timezone=settings.timezone,
             reminder_time=settings.reminder_time,
-            daily_new_cards=settings.daily_new_cards,
+            daily_new_words=settings.daily_new_words,
+            daily_review_budget=settings.daily_review_budget,
         )
-        session.add(user)
-        await session.flush()
+        .on_conflict_do_nothing(index_elements=[User.telegram_id])
+    )
+    user = await session.scalar(by_id)
+    assert user is not None
     return user
+
+
+@dataclass(frozen=True)
+class Visit:
+    """What the bot learned about the learner from one update."""
+
+    username: str | None
+    first_name: str | None
+    last_name: str | None
+    language_code: str | None
+    kind: str
+    action: str
+
+
+def record_visit(
+    session: AsyncSession, user: User, visit: Visit, now: datetime
+) -> None:
+    """Refresh the learner's profile and log the update in the usage journal."""
+    user.username = visit.username
+    user.first_name = visit.first_name
+    user.last_name = visit.last_name
+    user.language_code = visit.language_code
+    user.last_seen_at = now
+    user.blocked_at = None
+    session.add(
+        UsageEvent(
+            user_id=user.id, occurred_at=now, kind=visit.kind, action=visit.action
+        )
+    )
 
 
 async def deal_missing_cards(session: AsyncSession, user: User, now: datetime) -> None:
@@ -122,28 +175,157 @@ async def add_word(session: AsyncSession, draft: WordDraft) -> Word:
     return word
 
 
-async def _new_cards_started(session: AsyncSession, user: User, since: datetime) -> int:
+# Like Anki's "learn ahead limit": when nothing is due, a learning step that is
+# due this soon is shown now rather than making the learner wait.
+LEARN_AHEAD = timedelta(minutes=20)
+# How far ahead the review forecast looks. A new card rated Good returns in 2-3
+# days, so a forecast of tomorrow alone would not see the load it creates.
+FORECAST_DAYS = 7
+# "Struggling" = at least this many "Забыл" among the last STRUGGLE_WINDOW answers today.
+STRUGGLE_WINDOW = 10
+STRUGGLE_AGAIN = 3
+
+
+@dataclass(frozen=True)
+class Pace:
+    """Whether the learner's own answers leave room for new material today."""
+
+    new_words_today: int
+    new_words_cap: int | None
+    forecast_peak: int
+    budget: int
+    struggling: bool
+    overridden: bool
+
+    @property
+    def allows_new_cards(self) -> bool:
+        return self.overridden or (
+            not self.struggling and self.forecast_peak < self.budget
+        )
+
+    @property
+    def allows_new_words(self) -> bool:
+        under_cap = (
+            self.new_words_cap is None or self.new_words_today < self.new_words_cap
+        )
+        return self.allows_new_cards and (self.overridden or under_cap)
+
+
+async def _new_words_started(
+    session: AsyncSession, user: User, day_start: datetime
+) -> int:
+    """Words whose first card was answered today (answers in /check do not count)."""
+    earlier_card = aliased(Card)
+    reviewed_before = exists(
+        select(ReviewLog.id)
+        .join(earlier_card, earlier_card.id == ReviewLog.card_id)
+        .where(
+            earlier_card.user_id == user.id,
+            earlier_card.word_id == Card.word_id,
+            ReviewLog.reviewed_at < day_start,
+        )
+    )
     stmt = (
-        select(func.count())
+        select(func.count(func.distinct(Card.word_id)))
         .select_from(ReviewLog)
         .join(Card, Card.id == ReviewLog.card_id)
         .where(
             Card.user_id == user.id,
             ReviewLog.state_before.is_(None),
             ReviewLog.is_triage.is_(False),
-            ReviewLog.reviewed_at >= since,
+            ReviewLog.reviewed_at >= day_start,
+            ~reviewed_before,
         )
     )
     return (await session.scalar(stmt)) or 0
 
 
-async def next_card(session: AsyncSession, user: User, now: datetime) -> Card | None:
-    """Pick the next due card.
+async def _forecast_peak(session: AsyncSession, user: User, day_start: datetime) -> int:
+    """Busiest of the next FORECAST_DAYS days, in reviews, per the FSRS schedule.
+
+    Cards still in learning steps have no long-term due date yet; each is
+    counted once on top of the peak, as it will land on one of those days.
+    """
+    horizon = day_start + timedelta(days=FORECAST_DAYS + 1)
+    in_review = Card.state == fsrs.State.Review.value
+    dues = await session.scalars(
+        select(Card.due).where(Card.user_id == user.id, in_review, Card.due < horizon)
+    )
+    per_day = Counter((due - day_start) // timedelta(days=1) for due in dues)
+    peak = max((per_day[day] for day in range(1, FORECAST_DAYS + 1)), default=0)
+    learning = await session.scalar(
+        select(func.count()).where(
+            Card.user_id == user.id, Card.last_review.is_not(None), ~in_review
+        )
+    )
+    return peak + (learning or 0)
+
+
+async def _struggling(session: AsyncSession, user: User, day_start: datetime) -> bool:
+    recent = await session.scalars(
+        select(ReviewLog.rating)
+        .join(Card, Card.id == ReviewLog.card_id)
+        .where(
+            Card.user_id == user.id,
+            ReviewLog.is_triage.is_(False),
+            ReviewLog.reviewed_at >= day_start,
+        )
+        .order_by(ReviewLog.reviewed_at.desc(), ReviewLog.id.desc())
+        .limit(STRUGGLE_WINDOW)
+    )
+    return sum(rating == fsrs.Rating.Again.value for rating in recent) >= STRUGGLE_AGAIN
+
+
+async def get_pace(session: AsyncSession, user: User, now: datetime) -> Pace:
+    day_start = learning_day_start(now, user.timezone)
+    return Pace(
+        new_words_today=await _new_words_started(session, user, day_start),
+        new_words_cap=user.daily_new_words,
+        forecast_peak=await _forecast_peak(session, user, day_start),
+        budget=user.daily_review_budget,
+        struggling=await _struggling(session, user, day_start),
+        overridden=user.pace_override_on == day_start.date(),
+    )
+
+
+async def override_pace_today(session: AsyncSession, user: User, now: datetime) -> bool:
+    """Lift the pacing brakes for today; False on a double tap or a stale button."""
+    day = learning_day_start(now, user.timezone).date()
+    lifted = await session.scalar(
+        update(User)
+        .where(
+            User.id == user.id,
+            or_(User.pace_override_on.is_(None), User.pace_override_on != day),
+        )
+        .values(pace_override_on=day)
+        .returning(User.id)
+    )
+    if lifted is None:
+        return False
+    user.pace_override_on = day
+    return True
+
+
+async def next_card(
+    session: AsyncSession,
+    user: User,
+    now: datetime,
+    *,
+    ignore_pace: bool = False,
+    learn_ahead: bool = True,
+) -> Card | None:
+    """Pick the next card to show.
 
     Order: cards already in learning steps, then reviews by due date, then new
-    cards in the order words were added. Siblings are buried: once any card of a
-    word was reviewed today, the word's other cards wait until tomorrow, so
-    recognition does not give away the answer to the recall drill.
+    cards in the order words were added. New cards come only while `Pace`
+    allows them: the learner's own ratings drive the forecast and the struggle
+    check. Siblings are buried: once any card of a word was reviewed today, the
+    word's other cards wait until tomorrow, so recognition does not give away
+    the answer to the recall drill. When nothing is due, a learning step due
+    within `LEARN_AHEAD` is shown early.
+
+    `ignore_pace` answers "would a new card come if the pace allowed it";
+    `learn_ahead=False` answers "is anything due right now".
     """
     day_start = learning_day_start(now, user.timezone)
     sibling = aliased(Card)
@@ -157,27 +339,73 @@ async def next_card(session: AsyncSession, user: User, now: datetime) -> Card | 
             ReviewLog.reviewed_at >= day_start,
         )
     )
+    word_started = exists(
+        select(sibling.id).where(
+            sibling.user_id == Card.user_id,
+            sibling.word_id == Card.word_id,
+            sibling.last_review.is_not(None),
+        )
+    )
     is_new = Card.last_review.is_(None)
     stmt = (
         select(Card)
-        .where(Card.user_id == user.id, Card.due <= now, ~sibling_reviewed_today)
+        .where(Card.user_id == user.id, ~sibling_reviewed_today)
         .options(selectinload(Card.word).selectinload(Word.examples))
         .options(selectinload(Card.example))
         .order_by(
-            case(
-                (is_new, 2),
-                (Card.state == fsrs.State.Review.value, 1),
-                else_=0,
-            ),
+            case((Card.state == fsrs.State.Review.value, 1), else_=0),
             case((is_new, Card.word_id), else_=0),
             Card.due,
             Card.id,
         )
         .limit(1)
     )
-    if await _new_cards_started(session, user, day_start) >= user.daily_new_cards:
-        stmt = stmt.where(~is_new)
-    return await session.scalar(stmt)
+    card = await session.scalar(stmt.where(~is_new, Card.due <= now))
+    if card is not None:
+        return card
+
+    new_cards: Select[tuple[Card]] | None = stmt.where(is_new, Card.due <= now)
+    if not ignore_pace:
+        pace = await get_pace(session, user, now)
+        if not pace.allows_new_cards:
+            new_cards = None
+        elif not pace.allows_new_words:
+            new_cards = stmt.where(is_new, Card.due <= now, word_started)
+    if new_cards is not None:
+        card = await session.scalar(new_cards)
+    if card is not None or ignore_pace or not learn_ahead:
+        return card
+
+    in_learning = Card.last_review.is_not(None) & (
+        Card.state != fsrs.State.Review.value
+    )
+    return await session.scalar(stmt.where(in_learning, Card.due <= now + LEARN_AHEAD))
+
+
+def apply_settings(user: User, change: SettingsChange, now: datetime) -> None:
+    if change.no_word_ceiling:
+        user.daily_new_words = None
+    elif change.daily_new_words is not None:
+        user.daily_new_words = change.daily_new_words
+    if change.review_budget is not None:
+        user.daily_review_budget = change.review_budget
+    if change.timezone is not None:
+        user.timezone = change.timezone
+    if change.reminders_off:
+        user.reminder_time = None
+    elif change.reminder_time is not None:
+        user.reminder_time = change.reminder_time
+    if change.reminder_time is not None or change.timezone is not None:
+        _skip_reminder_already_past(user, now)
+
+
+def _skip_reminder_already_past(user: User, now: datetime) -> None:
+    """A reminder time already past today would fire within a minute; start tomorrow."""
+    if user.reminder_time is None:
+        return
+    local = now.astimezone(ZoneInfo(user.timezone))
+    if user.reminder_time <= local.time():
+        user.last_reminded_on = local.date()
 
 
 async def next_due_at(session: AsyncSession, user: User) -> datetime | None:

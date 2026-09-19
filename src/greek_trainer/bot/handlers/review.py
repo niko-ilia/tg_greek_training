@@ -29,11 +29,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from greek_trainer.bot.render import (
     RATING_LABELS,
     NextCard,
+    PaceOverride,
     Rate,
     ShowAnswer,
     answer_text,
     expected_answer,
     format_interval,
+    pace_keyboard,
+    pace_text,
     question_text,
     rating_keyboard,
     show_answer_keyboard,
@@ -44,7 +47,14 @@ from greek_trainer.config import Settings
 from greek_trainer.db.models import Card, CardType, User
 from greek_trainer.domain.greek import Verdict, check_answer, check_translation
 from greek_trainer.domain.srs import preview_intervals
-from greek_trainer.services import get_card, next_card, next_due_at, record_review
+from greek_trainer.services import (
+    get_card,
+    get_pace,
+    next_card,
+    next_due_at,
+    override_pace_today,
+    record_review,
+)
 
 router = Router(name="review")
 
@@ -193,10 +203,18 @@ async def show_next_card(
     if card is None:
         await state.clear()
         upcoming = await next_due_at(session, user)
-        text = "🎉 На сейчас всё повторено."
+        held_back = await next_card(session, user, now, ignore_pace=True)
+        text = (
+            pace_text(await get_pace(session, user, now))
+            if held_back is not None
+            else "🎉 На сейчас всё повторено."
+        )
         if upcoming is not None:
             local = upcoming.astimezone(ZoneInfo(user.timezone))
             text += f"\nСледующее повторение: {local:%d.%m %H:%M}."
+        if held_back is not None:
+            await bot.send_message(chat_id, text, reply_markup=pace_keyboard())
+            return
         try:
             await bot.send_message(chat_id, text, message_effect_id=CONFETTI_EFFECT_ID)
         except TelegramBadRequest:
@@ -253,6 +271,28 @@ async def next_callback(
     settings: Settings,
 ) -> None:
     await query.answer()
+    await show_next_card(bot, query.from_user.id, state, session, user, settings)
+
+
+@router.callback_query(PaceOverride.filter())
+async def pace_override(
+    query: CallbackQuery,
+    bot: Bot,
+    state: FSMContext,
+    session: AsyncSession,
+    user: User,
+    settings: Settings,
+) -> None:
+    if not await override_pace_today(session, user, datetime.now(UTC)):
+        await query.answer("Уже продолжаем.")
+        return
+    await session.flush()
+    await query.answer("Сегодня без ограничений")
+    if isinstance(query.message, Message):
+        try:
+            await query.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
     await show_next_card(bot, query.from_user.id, state, session, user, settings)
 
 

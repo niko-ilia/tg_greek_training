@@ -51,10 +51,23 @@ class User(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     timezone: Mapped[str] = mapped_column(String(64))
     reminder_time: Mapped[time | None] = mapped_column(Time)
-    daily_new_cards: Mapped[int] = mapped_column(Integer)
+    # Ceiling on brand-new words per learning day; None means no ceiling.
+    daily_new_words: Mapped[int | None] = mapped_column(Integer)
+    # New words stop while the forecast peak of daily reviews reaches this.
+    daily_review_budget: Mapped[int] = mapped_column(Integer, server_default="150")
+    # "Всё равно дальше": the pacing brakes are off for this learning day.
+    pace_override_on: Mapped[date | None] = mapped_column(Date)
     last_reminded_on: Mapped[date | None] = mapped_column(Date)
     # Highest word id answered in /check ("know" or "learn"); the next pass continues after it.
     check_cursor: Mapped[int | None] = mapped_column(Integer)
+    # Telegram profile as of the last update, for knowing who uses the bot.
+    username: Mapped[str | None] = mapped_column(String(64))
+    first_name: Mapped[str | None] = mapped_column(String(128))
+    last_name: Mapped[str | None] = mapped_column(String(128))
+    language_code: Mapped[str | None] = mapped_column(String(16))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set when Telegram reports the learner blocked the bot; cleared on their next update.
+    blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -160,6 +173,24 @@ class ReviewLog(Base):
     answer_text: Mapped[str | None] = mapped_column(Text)
     # "I already know this word" from /check; excluded from the daily new-card limit.
     is_triage: Mapped[bool] = mapped_column(Boolean, server_default=false())
+
+
+class UsageEvent(Base):
+    """One Telegram update from a learner: what they did and when, never the text."""
+
+    __tablename__ = "usage_events"
+    __table_args__ = (
+        Index("ix_usage_events_user_id_occurred_at", "user_id", "occurred_at"),
+        Index("ix_usage_events_occurred_at", "occurred_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # command | button | text | message | status | other
+    kind: Mapped[str] = mapped_column(String(16))
+    # Command name, callback prefix, content type or chat member status.
+    action: Mapped[str] = mapped_column(String(64))
 
 
 class TtsCache(Base):

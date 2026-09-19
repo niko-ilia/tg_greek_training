@@ -2,7 +2,8 @@
 
 Telegram bot for memorizing Greek vocabulary with FSRS spaced repetition. The dictionary
 (`words`, `examples`) is shared by every learner; cards and review logs are per Telegram user.
-Access is an allowlist of Telegram ids. User-facing text is Russian; code, comments, tests,
+Open to anyone in private chats; `ADMIN_TELEGRAM_IDS` (old name `ALLOWED_TELEGRAM_IDS` still
+read) lists admins, the only ones allowed to `/add` words. User-facing text is Russian; code, comments, tests,
 migrations and this file are English. `README.md` is the human-facing doc, in Russian.
 
 ## Commands
@@ -49,19 +50,42 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - Card FSRS columns mirror `fsrs.Card`; convert only through `domain/srs.py`.
 - `cards.version` bumps on every review; callback buttons carry it, stale taps are rejected.
 - `review_logs` is append-only history for future FSRS parameter optimization. Never rewrite.
-- `review_logs.state_before IS NULL` marks a card's first review; the daily new-card limit
-  counts these, except rows with `is_triage` (the "I know it" answer in `/check`, which rates
-  every card of the word Easy).
+- `review_logs.state_before IS NULL` marks a card's first review. A word counts as a new word
+  today when its first non-triage review is today and it had none before (`is_triage` = the
+  "I know it" answer in `/check`, which rates every card of the word Easy).
 - `/check` walks words with no reviewed card in `words.id` order after `users.check_cursor`;
   both "know" and "learn" move the cursor through `advance_check`, a conditional UPDATE that
   rejects double taps and stale buttons. A skipped word is not offered again.
 - Handlers that take free text in an FSM state must exclude commands
   (`~F.text.startswith("/")`), or `/review` and friends get parsed as input.
+- New material is paced by the learner's ratings, not a fixed card count (`Pace` in
+  `services.py`): new cards stop while the FSRS forecast peak of the next 7 days (+ cards in
+  learning) reaches `daily_review_budget`, or while 3 of the last 10 answers today are Again;
+  brand-new words also stop at `daily_new_words` (NULL = no ceiling). Due learning and review
+  cards are never blocked. "Всё равно дальше" sets `pace_override_on` = today (conditional
+  UPDATE). When nothing is due, a learning step due within `LEARN_AHEAD` (20 min, as in Anki)
+  is shown early; review-state cards are never pulled forward.
 - Sibling burying: once any card of a word is reviewed today the word's other cards wait.
   The learning day rolls over at 04:00 local. Learning steps of the same card are not blocked.
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by
   word, then card type (recognition before recall).
 - One DB transaction per Telegram update; handlers receive `session` and `user`.
+- `PrivateChatsOnlyMiddleware` drops group chats and senderless updates. `DbSessionMiddleware`
+  refreshes the user's Telegram profile and `last_seen_at`, clears `blocked_at`, and writes one
+  `usage_events` row per update (kind + action from `describe_update`). Never store message
+  text in `usage_events`.
+- Reminders run one short transaction per learner: lock the `users` row, claim the reminder
+  (`last_reminded_on`), commit, then send outside any transaction. Never hold a row lock across
+  a Telegram call: every update writes to `users`. A lost send skips that day's reminder (at
+  most once, never repeated); `TelegramForbiddenError` sets `blocked_at`.
+- Code that commits on its own (reminders) takes a session factory; tests pass the
+  `session_factory` fixture, whose commits become savepoints of the per-test rollback.
+- Races need real transactions: `tests/test_concurrency.py` commits for real and deletes its
+  rows afterwards. Derive cleanup keys with `lemma_key()`, a leaked row breaks every later test.
+- `get_or_create_user` inserts with ON CONFLICT DO NOTHING: a new learner's first tap arrives
+  as two concurrent updates (`my_chat_member` + `/start`).
+- The reminder claim locks the user row with SKIP LOCKED: a learner mid-update is retried next
+  minute, never waited on. It checks cards due now only, without learn-ahead.
 - One message per card: the question is a voice message with the text as caption (raw HTML
   under 1024 chars, otherwise plain text), edited in place into the answer and then the result.
   FSM data keeps `card_message_id` and `card_has_caption` for that. `/check` edits one message
@@ -82,7 +106,7 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - asyncpg rejects two statements in one `execute`; send them separately.
 - Async SQLAlchemy raises `MissingGreenlet` on any lazy load. Pass collections to constructors
   (`Word(cards=[...])`) or `selectinload` them; never touch an unloaded relationship.
-- `pydantic-settings` decodes list-like env values as JSON; `ALLOWED_TELEGRAM_IDS` is
+- `pydantic-settings` decodes list-like env values as JSON; `ADMIN_TELEGRAM_IDS` is
   comma-separated via `NoDecode` plus a validator in `config.py`.
 - Telegram may return a sent voice as `audio` or `document`; `tts.py` handles all three.
 - Test fixtures build the schema with `metadata.create_all`, so a passing test suite does not

@@ -11,11 +11,15 @@ from greek_trainer.domain.srs import build_scheduler
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.errors import DuplicateWordError
 from greek_trainer.services import (
+    LEARN_AHEAD,
+    STRUGGLE_AGAIN,
     add_word,
     deal_missing_cards,
     get_or_create_user,
+    get_pace,
     get_stats,
     next_card,
+    override_pace_today,
     record_review,
 )
 
@@ -99,8 +103,10 @@ async def test_siblings_are_buried_after_a_review(
     assert sibling is not None and sibling.card_type is not CardType.RECOGNITION
 
 
-async def test_daily_new_card_limit(session: AsyncSession, user: User) -> None:
-    user.daily_new_cards = 1
+async def test_daily_ceiling_counts_words_not_cards(
+    session: AsyncSession, user: User
+) -> None:
+    user.daily_new_words = 1
     await _add(session, user, "ναι\nда")
     await _add(session, user, "όχι\nнет")
 
@@ -110,7 +116,8 @@ async def test_daily_new_card_limit(session: AsyncSession, user: User) -> None:
     await session.flush()
 
     assert await next_card(session, user, NOW) is None
-    # New cards follow the order words were added: ναι's recall card goes first.
+    assert await next_card(session, user, NOW, ignore_pace=True) is not None
+    # Tomorrow ναι's second card is not a new word, so it is not held back by the ceiling.
     tomorrow = await next_card(session, user, NOW + timedelta(days=1))
     assert tomorrow is not None
     assert (tomorrow.word.lemma, tomorrow.card_type) == ("ναι", CardType.RECALL)
@@ -132,3 +139,68 @@ async def test_record_review_logs_and_bumps_version(
     stats = await get_stats(session, user, NOW)
     assert (stats.words, stats.cards, stats.reviewed_today) == (1, 2, 1)
     assert stats.retention_30d is None
+
+
+async def test_override_lifts_the_brakes_for_today_only(
+    session: AsyncSession, user: User
+) -> None:
+    user.daily_new_words = 1
+    await _add(session, user, "ναι\nда")
+    await _add(session, user, "όχι\nнет")
+    first = await next_card(session, user, NOW)
+    assert first is not None
+    record_review(session, SCHEDULER, first, fsrs.Rating.Easy, NOW)
+    await session.flush()
+    assert await next_card(session, user, NOW) is None
+
+    assert await override_pace_today(session, user, NOW)
+    assert not await override_pace_today(session, user, NOW)  # double tap
+    card = await next_card(session, user, NOW)
+    assert card is not None and card.word.lemma == "όχι"
+    assert not (await get_pace(session, user, NOW + timedelta(days=1))).overridden
+
+
+async def test_forgetting_pauses_new_words(session: AsyncSession, user: User) -> None:
+    for lemma in ("ένα", "δύο", "τρία", "τέσσερα"):
+        await _add(session, user, f"{lemma}\nчисло")
+    for _ in range(STRUGGLE_AGAIN):
+        card = await next_card(session, user, NOW)
+        assert card is not None and card.last_review is None
+        record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
+        await session.flush()
+
+    pace = await get_pace(session, user, NOW)
+    assert pace.struggling and not pace.allows_new_cards
+    # The forgotten cards themselves keep coming back: learning is never blocked.
+    again = await next_card(session, user, NOW + timedelta(minutes=2))
+    assert again is not None and again.last_review is not None
+
+
+async def test_a_heavy_week_ahead_pauses_new_words(
+    session: AsyncSession, user: User
+) -> None:
+    user.daily_review_budget = 1
+    await _add(session, user, "ναι\nда")
+    await _add(session, user, "όχι\nнет")
+    card = await next_card(session, user, NOW)
+    assert card is not None
+    record_review(session, SCHEDULER, card, fsrs.Rating.Good, NOW)
+    await session.flush()
+
+    pace = await get_pace(session, user, NOW)
+    assert pace.forecast_peak >= 1 and not pace.allows_new_cards
+
+
+async def test_a_learning_step_due_soon_is_shown_instead_of_waiting(
+    session: AsyncSession, user: User
+) -> None:
+    await _add(session, user, "ναι\nда")
+    card = await next_card(session, user, NOW)
+    assert card is not None
+    record_review(session, SCHEDULER, card, fsrs.Rating.Good, NOW)
+    await session.flush()
+    assert card.due > NOW  # the next learning step is minutes away
+
+    early = await next_card(session, user, NOW + timedelta(minutes=1))
+    assert early is not None and early.id == card.id
+    assert card.due - (NOW + timedelta(minutes=1)) <= LEARN_AHEAD

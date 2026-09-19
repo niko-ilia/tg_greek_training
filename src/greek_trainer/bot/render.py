@@ -11,7 +11,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from greek_trainer.db.models import Card, CardType, Example, User, Word
 from greek_trainer.domain.greek import Verdict
-from greek_trainer.services import Stats
+from greek_trainer.services import Pace, Stats
 
 RATING_LABELS = {
     fsrs.Rating.Again: "Забыл",
@@ -42,6 +42,39 @@ class Rate(CallbackData, prefix="rate"):
 
 class NextCard(CallbackData, prefix="next"):
     pass
+
+
+class PaceOverride(CallbackData, prefix="pace"):
+    pass
+
+
+class Setting(CallbackData, prefix="set"):
+    key: str
+    value: str
+
+
+def pace_keyboard() -> InlineKeyboardMarkup:
+    data = PaceOverride().pack()
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Всё равно дальше", callback_data=data)]
+        ]
+    )
+
+
+def pace_text(pace: Pace) -> str:
+    """Why no new card came, in the learner's terms."""
+    if pace.struggling:
+        return (
+            "🧠 В последних ответах много «Забыл». Давай закрепим то, что уже "
+            "есть: новые слова подождут."
+        )
+    if pace.forecast_peak >= pace.budget:
+        return (
+            f"📈 В ближайшие дни уже до {pace.forecast_peak} повторений в день "
+            f"при бюджете {pace.budget}. Новые слова пока хватит."
+        )
+    return f"📚 Сегодня уже {pace.new_words_today} новых слов, это твой потолок."
 
 
 class Check(CallbackData, prefix="check"):
@@ -172,15 +205,71 @@ def check_keyboard(word: Word) -> InlineKeyboardMarkup:
     )
 
 
+# About 6 seconds per review card, for turning a budget into minutes.
+SECONDS_PER_REVIEW = 6
+WORD_PRESETS = ("10", "20", "30", "50", "off")
+BUDGET_PRESETS = ("100", "150", "250", "400")
+REMIND_PRESETS = ("09:00", "13:00", "19:00", "21:00", "off")
+ZONE_PRESETS = (
+    ("Кипр/Греция", "Europe/Nicosia"),
+    ("Москва", "Europe/Moscow"),
+    ("Берлин", "Europe/Berlin"),
+    ("Лондон", "Europe/London"),
+    ("Дубай", "Asia/Dubai"),
+)
+
+
 def settings_text(user: User) -> str:
+    words = (
+        f"до {user.daily_new_words}"
+        if user.daily_new_words is not None
+        else "без потолка"
+    )
+    minutes = max(1, round(user.daily_review_budget * SECONDS_PER_REVIEW / 60))
     reminder = f"{user.reminder_time:%H:%M}" if user.reminder_time else "выключено"
     return (
         "⚙️ <b>Настройки</b>\n"
-        f"Новых карточек в день: {user.daily_new_cards}\n"
-        f"Напоминание: {reminder}\n\n"
-        "Изменить: <code>/settings 20</code>, <code>/settings 20 19:30</code>, "
-        "<code>/settings off</code>"
+        f"📚 Новых слов в день: {words}\n"
+        f"🔁 Бюджет повторений: {user.daily_review_budget} в день, ≈ {minutes} мин\n"
+        f"🔔 Напоминание: {reminder}\n"
+        f"🌍 Часовой пояс: {escape(user.timezone)}\n\n"
+        "Новые слова идут, пока прогноз повторений на неделю вперёд укладывается "
+        "в бюджет и ответы в основном верные. Чем легче тебе даются слова, тем "
+        "реже они возвращаются и тем больше места для новых.\n\n"
+        "Текстом: <code>/settings words 40</code>, <code>/settings budget 200</code>, "
+        "<code>/settings remind 07:30</code>, <code>/settings tz Asia/Bangkok</code>"
     )
+
+
+def settings_keyboard(user: User) -> InlineKeyboardMarkup:
+    def button(label: str, key: str, value: str, current: bool) -> InlineKeyboardButton:
+        # Callback data is ":"-separated, so a clock time travels as "0930".
+        data = Setting(key=key, value=value.replace(":", "")).pack()
+        return InlineKeyboardButton(
+            text=f"✓ {label}" if current else label, callback_data=data
+        )
+
+    words = str(user.daily_new_words) if user.daily_new_words is not None else "off"
+    remind = f"{user.reminder_time:%H:%M}" if user.reminder_time else "off"
+    rows = [
+        [
+            button(f"📚 {'∞' if v == 'off' else v}", "words", v, v == words)
+            for v in WORD_PRESETS
+        ],
+        [
+            button(f"🔁 {v}", "budget", v, v == str(user.daily_review_budget))
+            for v in BUDGET_PRESETS
+        ],
+        [
+            button("🔕" if v == "off" else f"🔔 {v}", "remind", v, v == remind)
+            for v in REMIND_PRESETS
+        ],
+        [
+            button(f"🌍 {label}", "tz", zone, zone == user.timezone)
+            for label, zone in ZONE_PRESETS
+        ],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def stats_text(stats: Stats) -> str:
