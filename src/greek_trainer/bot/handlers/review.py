@@ -294,7 +294,10 @@ async def next_callback(
     user: User,
     settings: Settings,
 ) -> None:
-    await query.answer()
+    # A tap while nothing is due edits the message into the same text, which
+    # Telegram refuses as "not modified": without the toast the button looks dead.
+    ready = await next_card(session, user, datetime.now(UTC)) is not None
+    await query.answer(None if ready else "Карточка ещё не готова")
     # The same button also sits under the /add confirmation and the reminder: those
     # texts must survive, only the message this handler wrote may be edited away.
     message = _tapped(query)
