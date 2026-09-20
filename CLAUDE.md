@@ -63,13 +63,14 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   (`~F.text.startswith("/")`), or `/review` and friends get parsed as input.
 - New material is paced by the learner's ratings, not a fixed card count (`Pace` in
   `services.py`): new cards stop while the FSRS forecast peak of the next 7 days (+ cards in
-  learning) reaches `daily_review_budget`, or while 3 of the last 10 answers today are Again;
-  brand-new words also stop at `daily_new_words` (NULL = no ceiling). Due learning and review
-  cards are never blocked. "Всё равно дальше" sets `pace_override_on` = today (conditional
-  UPDATE). When nothing is due, a learning step due within `LEARN_AHEAD` (20 min, as in Anki)
-  is shown early, but never one answered less than `MIN_REPEAT_GAP` (3 min) ago: in a chat the
-  answer is still visible above. Review-state cards are never pulled forward. The struggle
-  check counts only answers on words started on earlier days (`_word_seen_before`).
+  learning) reaches `daily_review_budget`, or while 3 of the last 10 cards answered today
+  ended on Again; brand-new words also stop at `daily_new_words` (NULL = no ceiling). Due
+  learning and review cards are never blocked. "Всё равно дальше" sets `pace_override_on` =
+  today (conditional UPDATE). When nothing is due, a learning step due within `LEARN_AHEAD`
+  (20 min, as in Anki) is shown early, but never one answered less than `MIN_REPEAT_GAP`
+  (3 min) ago: in a chat the answer is still visible above. Review-state cards are never pulled forward. The struggle
+  check counts only answers on words started on earlier days (`_word_seen_before`), and only
+  a card's latest answer: one forgotten and then recalled in the same pass is not a lapse.
 - The session-end "Дальше" button appears only when `repeat_gap_ends_at` finds a card held
   back by that gap; `next_due_at` treats cards buried today as due at the next day start.
   Tapping it edits that message in place instead of sending a new one; `end_message_id` in
