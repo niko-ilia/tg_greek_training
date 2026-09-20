@@ -188,6 +188,33 @@ async def test_forgetting_known_words_pauses_new_words(
     assert again is not None and again.last_review is not None
 
 
+async def test_a_lapse_recalled_in_the_same_pass_stops_counting(
+    session: AsyncSession, user: User
+) -> None:
+    yesterday = NOW - timedelta(days=1)
+    for lemma in ("ένα", "δύο", "τρία", "τέσσερα"):
+        await add_word(session, parse_word(f"{lemma}\nчисло"))
+    await deal_missing_cards(session, user, yesterday)
+    learned = []
+    for _ in range(STRUGGLE_AGAIN):
+        card = await next_card(session, user, yesterday)
+        assert card is not None
+        record_review(session, SCHEDULER, card, fsrs.Rating.Good, yesterday)
+        await session.flush()
+        learned.append(card)
+    for card in learned:
+        record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
+        await session.flush()
+    assert (await get_pace(session, user, NOW)).struggling
+
+    later = NOW + timedelta(minutes=5)
+    for card in learned[:-1]:
+        record_review(session, SCHEDULER, card, fsrs.Rating.Easy, later)
+        await session.flush()
+
+    assert not (await get_pace(session, user, later)).struggling
+
+
 async def test_forgetting_brand_new_words_is_not_struggling(
     session: AsyncSession, user: User
 ) -> None:

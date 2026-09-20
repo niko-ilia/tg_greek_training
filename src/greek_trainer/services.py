@@ -183,9 +183,9 @@ MIN_REPEAT_GAP = timedelta(minutes=3)
 # How far ahead the review forecast looks. A new card rated Good returns in 2-3
 # days, so a forecast of tomorrow alone would not see the load it creates.
 FORECAST_DAYS = 7
-# "Struggling" = at least this many "Забыл" among the last STRUGGLE_WINDOW answers
-# today on words started on earlier days; forgetting a word met today, however
-# many times, is just learning it.
+# "Struggling" = at least this many of the last STRUGGLE_WINDOW cards answered
+# today on words started on earlier days ended on "Забыл"; forgetting a word met
+# today, however many times, is just learning it.
 STRUGGLE_WINDOW = 10
 STRUGGLE_AGAIN = 3
 
@@ -286,8 +286,13 @@ async def _forecast_peak(session: AsyncSession, user: User, day_start: datetime)
 
 
 async def _struggling(session: AsyncSession, user: User, day_start: datetime) -> bool:
-    recent = await session.scalars(
-        select(ReviewLog.rating)
+    """How the last `STRUGGLE_WINDOW` cards answered today ended up.
+
+    Only a card's newest answer counts: one forgotten and then recalled in the
+    same pass is not a lapse any more.
+    """
+    latest = (
+        select(ReviewLog.card_id, ReviewLog.rating, ReviewLog.reviewed_at)
         .join(Card, Card.id == ReviewLog.card_id)
         .where(
             Card.user_id == user.id,
@@ -295,7 +300,13 @@ async def _struggling(session: AsyncSession, user: User, day_start: datetime) ->
             ReviewLog.reviewed_at >= day_start,
             _word_seen_before(user, day_start),
         )
-        .order_by(ReviewLog.reviewed_at.desc(), ReviewLog.id.desc())
+        .distinct(ReviewLog.card_id)
+        .order_by(ReviewLog.card_id, ReviewLog.reviewed_at.desc(), ReviewLog.id.desc())
+        .subquery()
+    )
+    recent = await session.scalars(
+        select(latest.c.rating)
+        .order_by(latest.c.reviewed_at.desc())
         .limit(STRUGGLE_WINDOW)
     )
     return sum(rating == fsrs.Rating.Again.value for rating in recent) >= STRUGGLE_AGAIN

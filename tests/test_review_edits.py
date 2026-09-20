@@ -69,12 +69,12 @@ async def _tap_next(
     session: AsyncSession,
     user: User,
     settings: Settings,
-) -> MagicMock:
+) -> tuple[MagicMock, MagicMock]:
     bot = MagicMock(send_message=AsyncMock())
     query = MagicMock(message=message, answer=AsyncMock())
     query.from_user.id = 42
     await next_callback(query, bot, state, session, user, settings)
-    return bot
+    return bot, query
 
 
 async def test_next_on_an_empty_session_edits_its_own_message(
@@ -82,9 +82,11 @@ async def test_next_on_an_empty_session_edits_its_own_message(
 ) -> None:
     message = _tapped_message()
     state = AsyncMock(get_data=AsyncMock(return_value={"end_message_id": 7}))
-    bot = await _tap_next(message, state, session, user, settings)
+    bot, query = await _tap_next(message, state, session, user, settings)
     message.edit_text.assert_awaited_once()
     bot.send_message.assert_not_awaited()
+    # The edit may be a no-op ("not modified"), so the tap answers with a toast.
+    query.answer.assert_awaited_once_with("Карточка ещё не готова")
 
 
 async def test_next_leaves_a_message_it_did_not_write_alone(
@@ -92,6 +94,6 @@ async def test_next_leaves_a_message_it_did_not_write_alone(
 ) -> None:
     message = _tapped_message()
     state = AsyncMock(get_data=AsyncMock(return_value={}))
-    bot = await _tap_next(message, state, session, user, settings)
+    bot, _ = await _tap_next(message, state, session, user, settings)
     message.edit_text.assert_not_awaited()
     bot.send_message.assert_awaited_once()
