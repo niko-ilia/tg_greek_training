@@ -1,16 +1,24 @@
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import fsrs
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.bot.handlers.review import (
     CAPTION_LIMIT,
     _replace_card,
     next_callback,
+    rate,
 )
+from greek_trainer.bot.render import Rate
 from greek_trainer.config import Settings
-from greek_trainer.db.models import User
+from greek_trainer.db.models import ReviewLog, User
+from greek_trainer.domain.srs import build_scheduler
+from greek_trainer.domain.word_input import parse_word
+from greek_trainer.services import add_word, deal_missing_cards, next_card
 
 
 def _voice_card(edit_error: Exception | None = None) -> MagicMock:
@@ -108,3 +116,33 @@ async def test_a_tap_whose_query_expired_still_updates_the_card(
     stale = _bad_request("Bad Request: query is too old and response timeout expired")
     await _tap_next(message, state, session, user, settings, answer_error=stale)
     message.edit_text.assert_awaited_once()
+
+
+async def test_a_rating_survives_a_query_that_expired(
+    session: AsyncSession, user: User, settings: Settings
+) -> None:
+    now = datetime.now(UTC)
+    await add_word(session, parse_word("ναι\nда"))
+    await deal_missing_cards(session, user, now)
+    card = await next_card(session, user, now)
+    assert card is not None
+
+    message = _tapped_message()
+    stale = _bad_request("Bad Request: query is too old and response timeout expired")
+    query = MagicMock(message=message, answer=AsyncMock(side_effect=stale))
+    query.from_user.id = 42
+    await rate(
+        query,
+        Rate(card_id=card.id, version=card.version, rating=fsrs.Rating.Good.value),
+        MagicMock(send_message=AsyncMock()),
+        AsyncMock(get_data=AsyncMock(return_value={})),
+        session,
+        user,
+        settings,
+        build_scheduler(0.9),
+    )
+
+    logged = await session.scalars(
+        select(ReviewLog).where(ReviewLog.card_id == card.id)
+    )
+    assert len(list(logged)) == 1 and card.version == 1
