@@ -82,6 +82,9 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - One DB transaction per Telegram update; handlers receive `session` and `user`. An exception
   rolls it back, so answer a callback query only through `bot/ack.py`: a query Telegram has
   expired would otherwise abort the handler and undo the review it just recorded.
+- FSM state lives in `fsm_states` (`bot/fsm.py`), not in memory, so a restart keeps the card in
+  flight. The storage writes in its own transaction, before and outside the handler's: a handler
+  that raises still leaves the state it had already written.
 - `PrivateChatsOnlyMiddleware` drops group chats and senderless updates. `DbSessionMiddleware`
   refreshes the user's Telegram profile and `last_seen_at`, clears `blocked_at`, and writes one
   `usage_events` row per update (kind + action from `describe_update`). Never store message
