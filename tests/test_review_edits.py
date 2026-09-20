@@ -69,9 +69,10 @@ async def _tap_next(
     session: AsyncSession,
     user: User,
     settings: Settings,
+    answer_error: Exception | None = None,
 ) -> tuple[MagicMock, MagicMock]:
     bot = MagicMock(send_message=AsyncMock())
-    query = MagicMock(message=message, answer=AsyncMock())
+    query = MagicMock(message=message, answer=AsyncMock(side_effect=answer_error))
     query.from_user.id = 42
     await next_callback(query, bot, state, session, user, settings)
     return bot, query
@@ -86,7 +87,7 @@ async def test_next_on_an_empty_session_edits_its_own_message(
     message.edit_text.assert_awaited_once()
     bot.send_message.assert_not_awaited()
     # The edit may be a no-op ("not modified"), so the tap answers with a toast.
-    query.answer.assert_awaited_once_with("Карточка ещё не готова")
+    query.answer.assert_awaited_once_with("Карточка ещё не готова", show_alert=False)
 
 
 async def test_next_leaves_a_message_it_did_not_write_alone(
@@ -97,3 +98,13 @@ async def test_next_leaves_a_message_it_did_not_write_alone(
     bot, _ = await _tap_next(message, state, session, user, settings)
     message.edit_text.assert_not_awaited()
     bot.send_message.assert_awaited_once()
+
+
+async def test_a_tap_whose_query_expired_still_updates_the_card(
+    session: AsyncSession, user: User, settings: Settings
+) -> None:
+    message = _tapped_message()
+    state = AsyncMock(get_data=AsyncMock(return_value={"end_message_id": 7}))
+    stale = _bad_request("Bad Request: query is too old and response timeout expired")
+    await _tap_next(message, state, session, user, settings, answer_error=stale)
+    message.edit_text.assert_awaited_once()

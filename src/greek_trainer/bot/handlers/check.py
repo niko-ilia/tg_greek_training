@@ -16,6 +16,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from greek_trainer.bot.ack import ack
 from greek_trainer.bot.render import Check, check_keyboard, check_text
 from greek_trainer.db.models import User, Word
 from greek_trainer.services import (
@@ -80,14 +81,14 @@ async def check_callback(
 ) -> None:
     message = query.message if isinstance(query.message, Message) else None
     if callback_data.action == "stop":
-        await query.answer()
+        await ack(query)
         if not await _edit(message, STOPPED, None):
             await bot.send_message(query.from_user.id, STOPPED)
         return
 
     word = await session.get(Word, callback_data.word_id)
     if word is None:
-        await query.answer("Слова уже нет.")
+        await ack(query, "Слова уже нет.")
         return
     now = datetime.now(UTC)
     if callback_data.action == "know":
@@ -97,10 +98,10 @@ async def check_callback(
         accepted = await advance_check(session, user, word)
         mark = "📚"
     if not accepted:
-        await query.answer("Уже отмечено.")
+        await ack(query, "Уже отмечено.")
         return
     await session.flush()
-    await query.answer()
+    await ack(query)
     text, markup = await _check_view(session, user, f"{mark} {escape(word.lemma)}")
     if not await _edit(message, text, markup):
         await bot.send_message(query.from_user.id, text, reply_markup=markup)

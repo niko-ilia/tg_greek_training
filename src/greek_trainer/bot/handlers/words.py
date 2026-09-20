@@ -13,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from greek_trainer.bot.ack import ack
 from greek_trainer.bot.render import (
     Setting,
     next_card_keyboard,
@@ -141,10 +142,10 @@ async def setting_button(
         # Callback data is client-supplied: it goes through the same validation as text.
         change = parse_settings(f"{callback_data.key} {value}")
     except AppError as err:
-        await query.answer(str(err), show_alert=True)
+        await ack(query, str(err), show_alert=True)
         return
     apply_settings(user, change, datetime.now(UTC))
-    await query.answer("Сохранено")
+    await ack(query, "Сохранено")
     if isinstance(query.message, Message):
         try:
             await query.message.edit_text(
