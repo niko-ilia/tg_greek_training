@@ -181,6 +181,10 @@ async def _drop_markup_by_id(bot: Bot, chat_id: int, data: dict[str, Any]) -> No
         pass
 
 
+def _tapped(query: CallbackQuery) -> Message | None:
+    return query.message if isinstance(query.message, Message) else None
+
+
 async def _react(message: Message, verdict: Verdict) -> None:
     try:
         await message.react([ReactionTypeEmoji(emoji=REACTIONS[verdict])])
@@ -195,7 +199,9 @@ async def show_next_card(
     session: AsyncSession,
     user: User,
     settings: Settings,
+    replace: Message | None = None,
 ) -> None:
+    """`replace` is the message whose button was tapped: it is reused, not duplicated."""
     now = datetime.now(UTC)
     card = await next_card(session, user, now)
     if card is None:
@@ -219,14 +225,25 @@ async def show_next_card(
             local = upcoming.astimezone(ZoneInfo(user.timezone))
             text += f"\nСледующее повторение: {local:%d.%m %H:%M}."
         markup = session_end_keyboard(held_back=held_back, returns_soon=returns_soon)
+        if replace is not None:
+            await _replace_card(bot, replace, text, markup)
+            await state.set_data({"end_message_id": replace.message_id})
+            return
         if markup is not None:
-            await bot.send_message(chat_id, text, reply_markup=markup)
+            sent = await bot.send_message(chat_id, text, reply_markup=markup)
+            await state.set_data({"end_message_id": sent.message_id})
             return
         try:
             await bot.send_message(chat_id, text, message_effect_id=CONFETTI_EFFECT_ID)
         except TelegramBadRequest:
             await bot.send_message(chat_id, text)
         return
+
+    if replace is not None:
+        try:
+            await replace.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
 
     # Store the card before sending: synthesis takes seconds, and an answer typed
     # meanwhile must be checked against this card, not the previous one.
@@ -278,7 +295,16 @@ async def next_callback(
     settings: Settings,
 ) -> None:
     await query.answer()
-    await show_next_card(bot, query.from_user.id, state, session, user, settings)
+    # The same button also sits under the /add confirmation and the reminder: those
+    # texts must survive, only the message this handler wrote may be edited away.
+    message = _tapped(query)
+    if message is not None and message.message_id != (await state.get_data()).get(
+        "end_message_id"
+    ):
+        message = None
+    await show_next_card(
+        bot, query.from_user.id, state, session, user, settings, replace=message
+    )
 
 
 @router.callback_query(PaceOverride.filter())
@@ -295,12 +321,9 @@ async def pace_override(
         return
     await session.flush()
     await query.answer("Сегодня без ограничений")
-    if isinstance(query.message, Message):
-        try:
-            await query.message.edit_reply_markup(reply_markup=None)
-        except TelegramBadRequest:
-            pass
-    await show_next_card(bot, query.from_user.id, state, session, user, settings)
+    await show_next_card(
+        bot, query.from_user.id, state, session, user, settings, replace=_tapped(query)
+    )
 
 
 @router.callback_query(ShowAnswer.filter())
