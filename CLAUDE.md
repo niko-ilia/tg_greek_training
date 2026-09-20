@@ -72,6 +72,8 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   check counts only answers on words started on earlier days (`_word_seen_before`).
 - The session-end "Дальше" button appears only when `repeat_gap_ends_at` finds a card held
   back by that gap; `next_due_at` treats cards buried today as due at the next day start.
+  Tapping it edits that message in place instead of sending a new one; `end_message_id` in
+  FSM data tells it from the same button under the `/add` confirmation and the reminder.
 - Sibling burying: once any card of a word is reviewed today the word's other cards wait.
   The learning day rolls over at 04:00 local. Learning steps of the same card are not blocked.
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by
