@@ -201,10 +201,11 @@ async def show_next_card(
     user: User,
     settings: Settings,
     replace: Message | None = None,
+    on_demand: bool = False,
 ) -> None:
     """`replace` is the message whose button was tapped: it is reused, not duplicated."""
     now = datetime.now(UTC)
-    card = await next_card(session, user, now)
+    card = await next_card(session, user, now, on_demand=on_demand)
     if card is None:
         await state.clear()
         upcoming = await next_due_at(session, user, now)
@@ -297,7 +298,9 @@ async def next_callback(
 ) -> None:
     # A tap while nothing is due edits the message into the same text, which
     # Telegram refuses as "not modified": without the toast the button looks dead.
-    ready = await next_card(session, user, datetime.now(UTC)) is not None
+    ready = (
+        await next_card(session, user, datetime.now(UTC), on_demand=True) is not None
+    )
     await ack(query, None if ready else "Карточка ещё не готова")
     # The same button also sits under the /add confirmation and the reminder: those
     # texts must survive, only the message this handler wrote may be edited away.
@@ -307,7 +310,14 @@ async def next_callback(
     ):
         message = None
     await show_next_card(
-        bot, query.from_user.id, state, session, user, settings, replace=message
+        bot,
+        query.from_user.id,
+        state,
+        session,
+        user,
+        settings,
+        replace=message,
+        on_demand=True,
     )
 
 
@@ -326,7 +336,14 @@ async def pace_override(
     await session.flush()
     await ack(query, "Сегодня без ограничений")
     await show_next_card(
-        bot, query.from_user.id, state, session, user, settings, replace=_tapped(query)
+        bot,
+        query.from_user.id,
+        state,
+        session,
+        user,
+        settings,
+        replace=_tapped(query),
+        on_demand=True,
     )
 
 

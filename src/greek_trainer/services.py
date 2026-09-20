@@ -349,6 +349,7 @@ async def next_card(
     *,
     ignore_pace: bool = False,
     learn_ahead: bool = True,
+    on_demand: bool = False,
 ) -> Card | None:
     """Pick the next card to show.
 
@@ -362,7 +363,8 @@ async def next_card(
     `MIN_REPEAT_GAP` ago.
 
     `ignore_pace` answers "would a new card come if the pace allowed it";
-    `learn_ahead=False` answers "is anything due right now".
+    `learn_ahead=False` answers "is anything due right now"; `on_demand` says
+    the learner asked for the card, which is what `MIN_REPEAT_GAP` waits for.
     """
     day_start = learning_day_start(now, user.timezone)
     sibling = aliased(Card)
@@ -407,11 +409,12 @@ async def next_card(
     in_learning = Card.last_review.is_not(None) & (
         Card.state != fsrs.State.Review.value
     )
+    gap = timedelta() if on_demand else MIN_REPEAT_GAP
     return await session.scalar(
         stmt.where(
             in_learning,
             Card.due <= now + LEARN_AHEAD,
-            Card.last_review <= now - MIN_REPEAT_GAP,
+            Card.last_review <= now - gap,
         )
     )
 

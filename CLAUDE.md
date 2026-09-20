@@ -68,7 +68,9 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   learning and review cards are never blocked. "Всё равно дальше" sets `pace_override_on` =
   today (conditional UPDATE). When nothing is due, a learning step due within `LEARN_AHEAD`
   (20 min, as in Anki) is shown early, but never one answered less than `MIN_REPEAT_GAP`
-  (3 min) ago: in a chat the answer is still visible above. Review-state cards are never pulled forward. The struggle
+  (3 min) ago: in a chat the answer is still visible above. A tap on "Дальше" or "Всё равно
+  дальше" passes `on_demand`, which drops that gap — the learner says they are ready, and the
+  button's own text promises it. Review-state cards are never pulled forward. The struggle
   check counts only answers on words started on earlier days (`_word_seen_before`), and only
   a card's latest answer: one forgotten and then recalled in the same pass is not a lapse.
 - The session-end "Дальше" button appears only when `repeat_gap_ends_at` finds a card held
