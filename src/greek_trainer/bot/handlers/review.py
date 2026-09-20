@@ -26,6 +26,7 @@ from aiogram.types import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from greek_trainer.bot.ack import ack
 from greek_trainer.bot.render import (
     EXERCISE_MARKS,
     RATING_LABELS,
@@ -297,7 +298,7 @@ async def next_callback(
     # A tap while nothing is due edits the message into the same text, which
     # Telegram refuses as "not modified": without the toast the button looks dead.
     ready = await next_card(session, user, datetime.now(UTC)) is not None
-    await query.answer(None if ready else "Карточка ещё не готова")
+    await ack(query, None if ready else "Карточка ещё не готова")
     # The same button also sits under the /add confirmation and the reminder: those
     # texts must survive, only the message this handler wrote may be edited away.
     message = _tapped(query)
@@ -320,10 +321,10 @@ async def pace_override(
     settings: Settings,
 ) -> None:
     if not await override_pace_today(session, user, datetime.now(UTC)):
-        await query.answer("Уже продолжаем.")
+        await ack(query, "Уже продолжаем.")
         return
     await session.flush()
-    await query.answer("Сегодня без ограничений")
+    await ack(query, "Сегодня без ограничений")
     await show_next_card(
         bot, query.from_user.id, state, session, user, settings, replace=_tapped(query)
     )
@@ -340,9 +341,9 @@ async def show_answer(
 ) -> None:
     card = await get_card(session, user, callback_data.card_id)
     if card is None or card.version != callback_data.version:
-        await query.answer("Эта карточка уже пройдена.")
+        await ack(query, "Эта карточка уже пройдена.")
         return
-    await query.answer()
+    await ack(query)
     if isinstance(query.message, Message):
         previews = preview_intervals(fsrs_scheduler, card, datetime.now(UTC))
         await _replace_card(
@@ -415,7 +416,7 @@ async def rate(
 ) -> None:
     card = await get_card(session, user, callback_data.card_id)
     if card is None or card.version != callback_data.version:
-        await query.answer("Уже оценено.")
+        await ack(query, "Уже оценено.")
         return
 
     now = datetime.now(UTC)
@@ -436,7 +437,7 @@ async def rate(
         answer_text=data.get("answer_text") if same_card else None,
     )
     await session.flush()
-    await query.answer()
+    await ack(query)
 
     if isinstance(query.message, Message):
         result = (
