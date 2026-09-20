@@ -1,7 +1,11 @@
+from datetime import UTC, datetime, timedelta
+
 from aiogram.fsm.storage.base import StorageKey
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from greek_trainer.bot.fsm import DbStorage
+from greek_trainer.bot.fsm import STATE_TTL, DbStorage
+from greek_trainer.db.models import FsmState
 
 KEY = StorageKey(bot_id=1, chat_id=42, user_id=42)
 
@@ -36,6 +40,21 @@ async def test_clearing_leaves_no_state_behind(
     await storage.set_data(KEY, {"card_id": 7})
     await storage.set_state(KEY, None)
     await storage.set_data(KEY, {})
+
+    assert await storage.get_state(KEY) is None
+    assert await storage.get_data(KEY) == {}
+
+
+async def test_a_state_older_than_the_ttl_is_gone(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    storage = DbStorage(session_factory)
+    await storage.set_state(KEY, "AddWord:waiting_for_word")
+    await storage.set_data(KEY, {"card_id": 7})
+
+    stale = datetime.now(UTC) - STATE_TTL - timedelta(minutes=1)
+    async with session_factory() as session, session.begin():
+        await session.execute(update(FsmState).values(updated_at=stale))
 
     assert await storage.get_state(KEY) is None
     assert await storage.get_data(KEY) == {}

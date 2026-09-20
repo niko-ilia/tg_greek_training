@@ -1,7 +1,7 @@
 """FSM storage in Postgres, so a restart keeps the card in flight."""
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from aiogram.fsm.state import State
@@ -11,6 +11,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from greek_trainer.db.models import FsmState
+
+# In memory a restart was the de-facto expiry. In the database a state outlives
+# the session it belongs to, and a text typed hours later would be graded as an
+# answer to a long-gone card, or parsed as a new dictionary word.
+STATE_TTL = timedelta(hours=1)
 
 
 def _key(key: StorageKey) -> str:
@@ -26,10 +31,12 @@ def _key(key: StorageKey) -> str:
 
 
 class DbStorage(BaseStorage):
-    """Keeps aiogram's per-chat state in `fsm_states`.
+    """Keeps aiogram's per-chat state in `fsm_states`, until `STATE_TTL`.
 
     It runs in its own transaction, outside the one the update handler gets:
-    a handler that fails leaves the state it had already written in place.
+    a handler that fails leaves the state it had already written in place. Its
+    connection comes from the same pool as that handler's session, so the pool
+    must stay larger than the number of updates handled at once.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -62,5 +69,8 @@ class DbStorage(BaseStorage):
             )
 
     async def _read(self, key: StorageKey, column: Any) -> Any:
+        fresh = FsmState.updated_at >= datetime.now(UTC) - STATE_TTL
         async with self._session_factory() as session:
-            return await session.scalar(select(column).where(FsmState.key == _key(key)))
+            return await session.scalar(
+                select(column).where(FsmState.key == _key(key), fresh)
+            )

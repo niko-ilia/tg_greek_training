@@ -383,8 +383,11 @@ async def typed_answer(
 ) -> None:
     assert message.text is not None
     data = await state.get_data()
-    card = await get_card(session, user, data["card_id"])
-    if card is None or card.version != data["version"]:
+    # State and data are written separately, so the state may name a card the
+    # data does not carry yet.
+    card_id = data.get("card_id")
+    card = None if card_id is None else await get_card(session, user, card_id)
+    if card is None or card.version != data.get("version"):
         await state.clear()
         await message.answer("Карточка устарела, запусти /review заново.")
         return
@@ -416,7 +419,7 @@ async def typed_answer(
 
 @router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
 async def stray_text(message: Message) -> None:
-    # FSM state is in memory: after a restart an answer arrives with no card waiting.
+    # No card is waiting: the session ended, or the state aged out of STATE_TTL.
     await message.answer("Сейчас я не жду ответа. Продолжить: /review")
 
 

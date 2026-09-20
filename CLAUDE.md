@@ -86,7 +86,10 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   expired would otherwise abort the handler and undo the review it just recorded.
 - FSM state lives in `fsm_states` (`bot/fsm.py`), not in memory, so a restart keeps the card in
   flight. The storage writes in its own transaction, before and outside the handler's: a handler
-  that raises still leaves the state it had already written.
+  that raises still leaves the state it had already written, and state and data are two writes,
+  so a handler must not assume its data carries what its state implies. A row older than
+  `STATE_TTL` (1 h) reads as empty: without it a text typed days later would be graded as an
+  answer, or parsed as a new word.
 - `PrivateChatsOnlyMiddleware` drops group chats and senderless updates. `DbSessionMiddleware`
   refreshes the user's Telegram profile and `last_seen_at`, clears `blocked_at`, and writes one
   `usage_events` row per update (kind + action from `describe_update`). Never store message
