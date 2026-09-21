@@ -230,9 +230,9 @@ def _word_seen_before(user: User, day_start: datetime) -> Exists:
     )
 
 
-def _chosen(user: User) -> tuple[ColumnElement[bool], ...]:
+def _chosen(user: User, ignore_mode: bool = False) -> tuple[ColumnElement[bool], ...]:
     """The exercise the learner picked, or nothing when they take them mixed."""
-    if user.exercise_mode is None:
+    if ignore_mode or user.exercise_mode is None:
         return ()
     return (Card.card_type == user.exercise_mode,)
 
@@ -363,6 +363,7 @@ async def next_card(
     ignore_pace: bool = False,
     learn_ahead: bool = True,
     on_demand: bool = False,
+    ignore_mode: bool = False,
 ) -> Card | None:
     """Pick the next card to show.
 
@@ -377,7 +378,9 @@ async def next_card(
 
     `ignore_pace` answers "would a new card come if the pace allowed it";
     `learn_ahead=False` answers "is anything due right now"; `on_demand` says
-    the learner asked for the card, which is what `MIN_REPEAT_GAP` waits for.
+    the learner asked for the card, which is what `MIN_REPEAT_GAP` waits for;
+    `ignore_mode` looks past the exercise they chose, for the reminder that has
+    to fire even when that exercise is empty.
     """
     day_start = learning_day_start(now, user.timezone)
     sibling = aliased(Card)
@@ -392,7 +395,11 @@ async def next_card(
     is_new = Card.last_review.is_(None)
     stmt = (
         select(Card)
-        .where(Card.user_id == user.id, ~sibling_reviewed_today, *_chosen(user))
+        .where(
+            Card.user_id == user.id,
+            ~sibling_reviewed_today,
+            *_chosen(user, ignore_mode),
+        )
         .options(selectinload(Card.word).selectinload(Word.examples))
         .options(selectinload(Card.example))
         .order_by(
@@ -503,13 +510,15 @@ async def repeat_gap_ends_at(
     return min((min(due, last + MIN_REPEAT_GAP) for due, last in rows), default=None)
 
 
-async def due_count(session: AsyncSession, user: User, now: datetime) -> int:
+async def due_count(
+    session: AsyncSession, user: User, now: datetime, ignore_mode: bool = False
+) -> int:
     stmt = (
         select(func.count())
         .select_from(Card)
         .where(
             Card.user_id == user.id,
-            *_chosen(user),
+            *_chosen(user, ignore_mode),
             Card.due <= now,
             Card.last_review.is_not(None),
         )

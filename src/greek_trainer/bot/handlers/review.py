@@ -214,7 +214,7 @@ async def show_next_card(
         comeback = await repeat_gap_ends_at(session, user, now)
         returns_soon = comeback is not None
         if held_back:
-            text = pace_text(await get_pace(session, user, now))
+            text = pace_text(await get_pace(session, user, now), user.exercise_mode)
         elif returns_soon:
             text = "⏳ Сейчас повторять нечего, кроме только что пройденных слов."
         else:

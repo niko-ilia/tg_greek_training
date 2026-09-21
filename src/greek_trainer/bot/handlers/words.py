@@ -166,4 +166,5 @@ async def setting_button(
 
 @router.message(Command("stats"))
 async def stats(message: Message, session: AsyncSession, user: User) -> None:
-    await message.answer(stats_text(await get_stats(session, user, datetime.now(UTC))))
+    stats = await get_stats(session, user, datetime.now(UTC))
+    await message.answer(stats_text(stats, user))

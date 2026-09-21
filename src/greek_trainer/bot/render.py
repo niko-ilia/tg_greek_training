@@ -73,7 +73,7 @@ def session_end_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-def pace_text(pace: Pace) -> str:
+def pace_text(pace: Pace, mode: CardType | None = None) -> str:
     """Why no new card came, in the learner's terms."""
     if pace.struggling:
         return (
@@ -81,10 +81,14 @@ def pace_text(pace: Pace) -> str:
             "есть: новые слова подождут."
         )
     if pace.forecast_peak >= pace.budget:
-        return (
+        text = (
             f"📈 В ближайшие дни уже до {pace.forecast_peak} повторений в день "
             f"при бюджете {pace.budget}. Новые слова пока хватит."
         )
+        if mode is not None:
+            # The load counts every exercise, but this mode cannot work it off.
+            text += "\nЭто нагрузка по всем упражнениям, разобрать её: /mode"
+        return text
     return f"📚 Сегодня уже {pace.new_words_today} новых слов, это твой потолок."
 
 
@@ -323,22 +327,29 @@ def mode_keyboard(user: User) -> InlineKeyboardMarkup:
 def mode_text(user: User) -> str:
     return (
         f"🎯 <b>Режим упражнений</b>\nСейчас: {MODE_LABELS[user.exercise_mode]}\n\n"
-        "В отдельном режиме идут только его карточки. Остальные ждут: их сроки "
-        "никуда не денутся, но и не подойдут, пока ты не вернёшься."
+        "В отдельном режиме идут только его карточки, остальные ждут своего часа. "
+        "Слово, пройденное сегодня, вернётся завтра в любом режиме: вторую карточку "
+        "того же слова в один день бот не даёт, иначе первая подскажет ответ."
     )
 
 
-def stats_text(stats: Stats) -> str:
+def stats_text(stats: Stats, user: User) -> str:
     retention = (
         f"{stats.retention_30d:.0%}"
         if stats.retention_30d is not None
         else "пока нет данных"
     )
+    # Only "due now" follows the mode, so say so instead of looking like a miscount.
+    scope = (
+        f" ({MODE_LABELS[user.exercise_mode]}, сменить /mode)"
+        if user.exercise_mode is not None
+        else ""
+    )
     return (
         "📊 <b>Статистика</b>\n"
         f"Слов в словаре: {stats.words}\n"
         f"Карточек: {stats.cards}, из них еще не начатых: {stats.new_cards}\n"
-        f"К повторению сейчас: {stats.due_now}\n"
+        f"К повторению сейчас: {stats.due_now}{scope}\n"
         f"Ответов сегодня: {stats.reviewed_today}\n"
         f"Запоминание за 30 дней: {retention}"
     )

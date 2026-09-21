@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from greek_trainer.bot.middlewares import describe_update
 from greek_trainer.bot.reminders import send_due_reminders
 from greek_trainer.config import Settings
-from greek_trainer.db.models import UsageEvent, User
+from greek_trainer.db.models import CardType, UsageEvent, User
 from greek_trainer.domain.srs import build_scheduler
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.services import (
@@ -168,3 +168,21 @@ async def test_no_reminder_for_a_learning_step_that_is_not_due_yet(
     bot = MagicMock(send_message=AsyncMock())
     await send_due_reminders(bot, session_factory, EVENING)
     bot.send_message.assert_not_awaited()
+
+
+async def test_a_mode_with_nothing_left_still_gets_the_reminder(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+) -> None:
+    await add_word(session, parse_word("ναι\nда"))
+    await deal_missing_cards(session, user, EVENING)
+    # No example marks a gap, so this learner has no cloze card at all.
+    user.exercise_mode = CardType.CLOZE
+    await session.commit()
+    assert await next_card(session, user, EVENING) is None
+
+    bot = MagicMock(send_message=AsyncMock())
+    await send_due_reminders(bot, session_factory, EVENING)
+    bot.send_message.assert_awaited_once()
+    assert "/mode" in bot.send_message.await_args.args[1]
