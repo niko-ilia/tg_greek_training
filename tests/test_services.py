@@ -273,6 +273,10 @@ async def test_a_card_just_answered_is_not_asked_again_right_away(
 
     # Its answer is still on screen: nothing to show until the step is due.
     assert await next_card(session, user, NOW + timedelta(seconds=10)) is None
+
+    # Unless the learner asks for it: "Дальше" means they are done reading it.
+    asked = await next_card(session, user, NOW + timedelta(seconds=10), on_demand=True)
+    assert asked is not None and asked.id == card.id
     back = await next_card(session, user, card.due)
     assert back is not None and back.id == card.id
 

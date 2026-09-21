@@ -68,7 +68,9 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   learning and review cards are never blocked. "Всё равно дальше" sets `pace_override_on` =
   today (conditional UPDATE). When nothing is due, a learning step due within `LEARN_AHEAD`
   (20 min, as in Anki) is shown early, but never one answered less than `MIN_REPEAT_GAP`
-  (3 min) ago: in a chat the answer is still visible above. Review-state cards are never pulled forward. The struggle
+  (3 min) ago: in a chat the answer is still visible above. A tap on "Дальше" or "Всё равно
+  дальше" passes `on_demand`, which drops that gap — the learner says they are ready, and the
+  button's own text promises it. Review-state cards are never pulled forward. The struggle
   check counts only answers on words started on earlier days (`_word_seen_before`), and only
   a card's latest answer: one forgotten and then recalled in the same pass is not a lapse.
 - The session-end "Дальше" button appears only when `repeat_gap_ends_at` finds a card held
@@ -82,6 +84,12 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
 - One DB transaction per Telegram update; handlers receive `session` and `user`. An exception
   rolls it back, so answer a callback query only through `bot/ack.py`: a query Telegram has
   expired would otherwise abort the handler and undo the review it just recorded.
+- FSM state lives in `fsm_states` (`bot/fsm.py`), not in memory, so a restart keeps the card in
+  flight. The storage writes in its own transaction, before and outside the handler's: a handler
+  that raises still leaves the state it had already written, and state and data are two writes,
+  so a handler must not assume its data carries what its state implies. A row older than
+  `STATE_TTL` (1 h) reads as empty: without it a text typed days later would be graded as an
+  answer, or parsed as a new word.
 - `PrivateChatsOnlyMiddleware` drops group chats and senderless updates. `DbSessionMiddleware`
   refreshes the user's Telegram profile and `last_seen_at`, clears `blocked_at`, and writes one
   `usage_events` row per update (kind + action from `describe_update`). Never store message

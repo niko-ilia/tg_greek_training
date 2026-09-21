@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import enum
 from datetime import date, datetime, time
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -31,6 +32,7 @@ from sqlalchemy import (
     false,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -200,3 +202,15 @@ class TtsCache(Base):
     voice: Mapped[str] = mapped_column(String(64), primary_key=True)
     text: Mapped[str] = mapped_column(Text, primary_key=True)
     telegram_file_id: Mapped[str] = mapped_column(String(255))
+
+
+class FsmState(Base):
+    """The conversation state aiogram keeps per chat, so a restart does not
+    forget the card the learner is answering."""
+
+    __tablename__ = "fsm_states"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    state: Mapped[str | None] = mapped_column(String(128))
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

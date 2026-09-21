@@ -12,6 +12,7 @@ from greek_trainer.bot.handlers.review import (
     _replace_card,
     next_callback,
     rate,
+    typed_answer,
 )
 from greek_trainer.bot.render import Rate
 from greek_trainer.config import Settings
@@ -146,3 +147,25 @@ async def test_a_rating_survives_a_query_that_expired(
         select(ReviewLog).where(ReviewLog.card_id == card.id)
     )
     assert len(list(logged)) == 1 and card.version == 1
+
+
+async def test_an_answer_with_no_card_in_the_state_is_not_a_crash(
+    session: AsyncSession, user: User, settings: Settings
+) -> None:
+    message = MagicMock(spec=Message)
+    message.text = "οικογένεια"
+    message.answer = AsyncMock()
+    state = AsyncMock(get_data=AsyncMock(return_value={}))
+
+    await typed_answer(
+        message,
+        MagicMock(send_message=AsyncMock()),
+        state,
+        session,
+        user,
+        settings,
+        build_scheduler(0.9),
+    )
+
+    state.clear.assert_awaited_once()
+    message.answer.assert_awaited_once()

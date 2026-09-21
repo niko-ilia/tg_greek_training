@@ -15,6 +15,7 @@ from aiogram.types import (
     BotCommandScopeChat,
 )
 
+from greek_trainer.bot.fsm import DbStorage
 from greek_trainer.bot.handlers import check, review, words
 from greek_trainer.bot.middlewares import (
     DbSessionMiddleware,
@@ -63,7 +64,9 @@ async def main() -> None:
         settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     dp = Dispatcher(
-        settings=settings, fsrs_scheduler=build_scheduler(settings.desired_retention)
+        storage=DbStorage(session_factory),
+        settings=settings,
+        fsrs_scheduler=build_scheduler(settings.desired_retention),
     )
     dp.update.outer_middleware(PrivateChatsOnlyMiddleware())
     dp.update.middleware(DbSessionMiddleware(session_factory, settings))
