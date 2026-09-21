@@ -285,9 +285,14 @@ async def _forecast_peak(session: AsyncSession, user: User, day_start: datetime)
     )
     per_day = Counter((due - day_start) // timedelta(days=1) for due in dues)
     peak = max((per_day[day] for day in range(1, FORECAST_DAYS + 1)), default=0)
+    # Cards outside the chosen exercise are not served, so they cannot be
+    # drained either: counting them would hold new material back for nothing.
     learning = await session.scalar(
         select(func.count()).where(
-            Card.user_id == user.id, Card.last_review.is_not(None), ~in_review
+            Card.user_id == user.id,
+            *_chosen(user),
+            Card.last_review.is_not(None),
+            ~in_review,
         )
     )
     return peak + (learning or 0)
@@ -502,7 +507,12 @@ async def due_count(session: AsyncSession, user: User, now: datetime) -> int:
     stmt = (
         select(func.count())
         .select_from(Card)
-        .where(Card.user_id == user.id, Card.due <= now, Card.last_review.is_not(None))
+        .where(
+            Card.user_id == user.id,
+            *_chosen(user),
+            Card.due <= now,
+            Card.last_review.is_not(None),
+        )
     )
     return (await session.scalar(stmt)) or 0
 

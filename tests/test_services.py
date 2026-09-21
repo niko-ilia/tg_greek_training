@@ -18,6 +18,7 @@ from greek_trainer.services import (
     add_word,
     apply_settings,
     deal_missing_cards,
+    due_count,
     get_or_create_user,
     get_pace,
     get_stats,
@@ -383,3 +384,22 @@ async def test_switching_the_mode_is_one_setting(
     assert user.exercise_mode is CardType.CLOZE
     apply_settings(user, parse_settings("mode all"), NOW)
     assert user.exercise_mode is None
+
+
+async def test_a_mode_narrows_what_counts_as_waiting(
+    session: AsyncSession, user: User
+) -> None:
+    await _add(session, user, XERO)
+    # Straight to the cards: burying would not let one word give two in a day.
+    for card in (await _cards(session, user))[:2]:
+        record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
+    await session.flush()
+
+    later = NOW + timedelta(hours=1)
+    assert await due_count(session, user, later) == 2
+    peak_mixed = (await get_pace(session, user, later)).forecast_peak
+
+    user.exercise_mode = CardType.RECOGNITION
+    assert await due_count(session, user, later) == 1
+    # Cards of another exercise are unreachable now, so they stop braking new ones.
+    assert (await get_pace(session, user, later)).forecast_peak < peak_mixed
