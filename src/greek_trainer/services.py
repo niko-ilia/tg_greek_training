@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import fsrs
 from sqlalchemy import (
+    ColumnElement,
     Exists,
     Select,
     case,
@@ -229,6 +230,13 @@ def _word_seen_before(user: User, day_start: datetime) -> Exists:
     )
 
 
+def _chosen(user: User, ignore_mode: bool = False) -> tuple[ColumnElement[bool], ...]:
+    """The exercise the learner picked, or nothing when they take them mixed."""
+    if ignore_mode or user.exercise_mode is None:
+        return ()
+    return (Card.card_type == user.exercise_mode,)
+
+
 def _buried_today(day_start: datetime) -> Exists:
     """Correlated on `Card`: another card of its word was answered today."""
     sibling, log = aliased(Card), aliased(ReviewLog)
@@ -277,9 +285,14 @@ async def _forecast_peak(session: AsyncSession, user: User, day_start: datetime)
     )
     per_day = Counter((due - day_start) // timedelta(days=1) for due in dues)
     peak = max((per_day[day] for day in range(1, FORECAST_DAYS + 1)), default=0)
+    # Cards outside the chosen exercise are not served, so they cannot be
+    # drained either: counting them would hold new material back for nothing.
     learning = await session.scalar(
         select(func.count()).where(
-            Card.user_id == user.id, Card.last_review.is_not(None), ~in_review
+            Card.user_id == user.id,
+            *_chosen(user),
+            Card.last_review.is_not(None),
+            ~in_review,
         )
     )
     return peak + (learning or 0)
@@ -350,6 +363,7 @@ async def next_card(
     ignore_pace: bool = False,
     learn_ahead: bool = True,
     on_demand: bool = False,
+    ignore_mode: bool = False,
 ) -> Card | None:
     """Pick the next card to show.
 
@@ -364,7 +378,9 @@ async def next_card(
 
     `ignore_pace` answers "would a new card come if the pace allowed it";
     `learn_ahead=False` answers "is anything due right now"; `on_demand` says
-    the learner asked for the card, which is what `MIN_REPEAT_GAP` waits for.
+    the learner asked for the card, which is what `MIN_REPEAT_GAP` waits for;
+    `ignore_mode` looks past the exercise they chose, for the reminder that has
+    to fire even when that exercise is empty.
     """
     day_start = learning_day_start(now, user.timezone)
     sibling = aliased(Card)
@@ -379,7 +395,11 @@ async def next_card(
     is_new = Card.last_review.is_(None)
     stmt = (
         select(Card)
-        .where(Card.user_id == user.id, ~sibling_reviewed_today)
+        .where(
+            Card.user_id == user.id,
+            ~sibling_reviewed_today,
+            *_chosen(user, ignore_mode),
+        )
         .options(selectinload(Card.word).selectinload(Word.examples))
         .options(selectinload(Card.example))
         .order_by(
@@ -420,6 +440,10 @@ async def next_card(
 
 
 def apply_settings(user: User, change: SettingsChange, now: datetime) -> None:
+    if change.all_modes:
+        user.exercise_mode = None
+    elif change.exercise_mode is not None:
+        user.exercise_mode = CardType(change.exercise_mode)
     if change.no_word_ceiling:
         user.daily_new_words = None
     elif change.daily_new_words is not None:
@@ -454,7 +478,7 @@ async def next_due_at(
     earliest, whatever its due date says.
     """
     day_start = learning_day_start(now, user.timezone)
-    started = Card.user_id == user.id, Card.last_review.is_not(None)
+    started = Card.user_id == user.id, Card.last_review.is_not(None), *_chosen(user)
     buried = _buried_today(day_start)
     free = await session.scalar(select(func.min(Card.due)).where(*started, ~buried))
     held = await session.scalar(select(func.min(Card.due)).where(*started, buried))
@@ -475,6 +499,7 @@ async def repeat_gap_ends_at(
     rows = await session.execute(
         select(Card.due, Card.last_review).where(
             Card.user_id == user.id,
+            *_chosen(user),
             Card.last_review > now - MIN_REPEAT_GAP,
             Card.state != fsrs.State.Review.value,
             Card.due > now,
@@ -485,11 +510,18 @@ async def repeat_gap_ends_at(
     return min((min(due, last + MIN_REPEAT_GAP) for due, last in rows), default=None)
 
 
-async def due_count(session: AsyncSession, user: User, now: datetime) -> int:
+async def due_count(
+    session: AsyncSession, user: User, now: datetime, ignore_mode: bool = False
+) -> int:
     stmt = (
         select(func.count())
         .select_from(Card)
-        .where(Card.user_id == user.id, Card.due <= now, Card.last_review.is_not(None))
+        .where(
+            Card.user_id == user.id,
+            *_chosen(user, ignore_mode),
+            Card.due <= now,
+            Card.last_review.is_not(None),
+        )
     )
     return (await session.scalar(stmt)) or 0
 

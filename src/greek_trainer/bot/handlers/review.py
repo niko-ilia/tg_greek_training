@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from greek_trainer.bot.ack import ack
 from greek_trainer.bot.render import (
     EXERCISE_MARKS,
+    MODE_LABELS,
     RATING_LABELS,
     NextCard,
     PaceOverride,
@@ -213,7 +214,7 @@ async def show_next_card(
         comeback = await repeat_gap_ends_at(session, user, now)
         returns_soon = comeback is not None
         if held_back:
-            text = pace_text(await get_pace(session, user, now))
+            text = pace_text(await get_pace(session, user, now), user.exercise_mode)
         elif returns_soon:
             text = "⏳ Сейчас повторять нечего, кроме только что пройденных слов."
         else:
@@ -226,6 +227,9 @@ async def show_next_card(
         elif upcoming is not None:
             local = upcoming.astimezone(ZoneInfo(user.timezone))
             text += f"\nСледующее повторение: {local:%d.%m %H:%M}."
+        if user.exercise_mode is not None:
+            # Otherwise a mode with nothing left looks like the whole deck is done.
+            text += f"\nРежим: {MODE_LABELS[user.exercise_mode]}, сменить /mode"
         markup = session_end_keyboard(held_back=held_back, returns_soon=returns_soon)
         if replace is not None:
             await _replace_card(bot, replace, text, markup)

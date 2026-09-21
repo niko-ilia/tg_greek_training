@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from greek_trainer.bot.ack import ack
 from greek_trainer.bot.render import (
     Setting,
+    mode_keyboard,
+    mode_text,
     next_card_keyboard,
     settings_keyboard,
     settings_text,
@@ -34,6 +36,7 @@ router = Router(name="words")
 HELP = """<b>Γεια σου!</b> Я помогаю запоминать греческие слова.
 
 /review – повторение (карточки по алгоритму FSRS)
+/mode – каким упражнением заниматься: слово → перевод, перевод → слово или пропуск
 /check – быстро отметить слова, которые уже знаешь
 /stats – статистика
 /settings – темп новых слов, бюджет повторений, напоминание, часовой пояс"""
@@ -131,6 +134,11 @@ async def settings(message: Message, command: CommandObject, user: User) -> None
     await message.answer(settings_text(user), reply_markup=settings_keyboard(user))
 
 
+@router.message(Command("mode"))
+async def mode(message: Message, user: User) -> None:
+    await message.answer(mode_text(user), reply_markup=mode_keyboard(user))
+
+
 @router.callback_query(Setting.filter())
 async def setting_button(
     query: CallbackQuery, callback_data: Setting, user: User
@@ -147,14 +155,16 @@ async def setting_button(
     apply_settings(user, change, datetime.now(UTC))
     await ack(query, "Сохранено")
     if isinstance(query.message, Message):
+        picked_mode = callback_data.key == "mode"
+        text = mode_text(user) if picked_mode else settings_text(user)
+        markup = mode_keyboard(user) if picked_mode else settings_keyboard(user)
         try:
-            await query.message.edit_text(
-                settings_text(user), reply_markup=settings_keyboard(user)
-            )
+            await query.message.edit_text(text, reply_markup=markup)
         except TelegramBadRequest:
             pass
 
 
 @router.message(Command("stats"))
 async def stats(message: Message, session: AsyncSession, user: User) -> None:
-    await message.answer(stats_text(await get_stats(session, user, datetime.now(UTC))))
+    stats = await get_stats(session, user, datetime.now(UTC))
+    await message.answer(stats_text(stats, user))

@@ -81,6 +81,16 @@ migrations and this file are English. `README.md` is the human-facing doc, in Ru
   The learning day rolls over at 04:00 local. Learning steps of the same card are not blocked.
 - New cards are served in `cards.id` order, so `deal_missing_cards` inserts ordered by
   word, then card type (recognition before recall).
+- `users.exercise_mode` (NULL = all) narrows every card query to one exercise: `next_card`,
+  `next_due_at`, `repeat_gap_ends_at`, `due_count` and the learning term of the forecast all
+  go through `_chosen`: what the mode hides cannot be drained, so counting it would brake new
+  material for nothing. The forecast of scheduled reviews stays global — that load is real
+  whatever the learner is drilling — so `pace_text` sends a braked learner to `/mode`, the only
+  way to work it off. Reminders pass `ignore_mode=True`: an empty mode is when the nudge
+  matters most, and a silent bot is how a learner leaves. Every screen that a mode narrows
+  says so (session end, `/stats`, the reminder), or "nothing left" reads as "all done".
+  The mode is one `Setting` callback, so `/mode` and `/settings mode recall` share the parser;
+  the buttons live only on `/mode`.
 - One DB transaction per Telegram update; handlers receive `session` and `user`. An exception
   rolls it back, so answer a callback query only through `bot/ack.py`: a query Telegram has
   expired would otherwise abort the handler and undo the review it just recorded.

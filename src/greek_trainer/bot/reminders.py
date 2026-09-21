@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from greek_trainer.bot.render import next_card_keyboard
+from greek_trainer.bot.render import MODE_LABELS, next_card_keyboard
 from greek_trainer.db.models import User
 from greek_trainer.services import deal_missing_cards, due_count, next_card
 
@@ -39,15 +39,18 @@ async def _claim_reminder(
     if user.last_reminded_on == local.date() or local.time() < user.reminder_time:
         return None
     await deal_missing_cards(session, user, now)
-    if await next_card(session, user, now, learn_ahead=False) is None:
+    # Past the chosen exercise: a learner whose mode ran dry needs the nudge most.
+    if await next_card(session, user, now, learn_ahead=False, ignore_mode=True) is None:
         return None
     user.last_reminded_on = local.date()
-    due = await due_count(session, user, now)
+    due = await due_count(session, user, now, ignore_mode=True)
     text = (
         f"⏰ Пора повторить греческий: {due} карточек ждут."
         if due
         else "⏰ Пора учить греческий: есть новые слова."
     )
+    if user.exercise_mode is not None:
+        text += f"\nРежим: {MODE_LABELS[user.exercise_mode]}, сменить /mode"
     return user.telegram_id, text
 
 

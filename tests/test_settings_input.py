@@ -20,9 +20,25 @@ def test_bare_form_and_off() -> None:
     assert parse_settings("remind off").reminders_off
 
 
+def test_mode_by_name_in_both_languages() -> None:
+    assert parse_settings("mode recall").exercise_mode == "recall"
+    assert parse_settings("режим узнавание").exercise_mode == "recognition"
+    assert parse_settings("mode all").all_modes
+
+
 @pytest.mark.parametrize(
     "args",
-    ["0", "words 999", "budget 5", "25:00", "²", "tz Mars/Base", "tz ../etc", "x"],
+    [
+        "0",
+        "words 999",
+        "budget 5",
+        "25:00",
+        "²",
+        "tz Mars/Base",
+        "tz ../etc",
+        "x",
+        "mode listening",
+    ],
 )
 def test_rejects_bad_values(args: str) -> None:
     with pytest.raises(ParseError):
