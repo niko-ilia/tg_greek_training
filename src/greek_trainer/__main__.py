@@ -28,6 +28,7 @@ from greek_trainer.domain.srs import build_scheduler
 
 COMMANDS = [
     BotCommand(command="review", description="Повторение"),
+    BotCommand(command="mode", description="Режим упражнений"),
     BotCommand(command="check", description="Отметить знакомые слова"),
     BotCommand(command="stats", description="Статистика"),
     BotCommand(command="settings", description="Настройки"),

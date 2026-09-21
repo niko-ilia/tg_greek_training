@@ -60,6 +60,10 @@ class User(Base):
     # "Всё равно дальше": the pacing brakes are off for this learning day.
     pace_override_on: Mapped[date | None] = mapped_column(Date)
     last_reminded_on: Mapped[date | None] = mapped_column(Date)
+    # Only this exercise is served; NULL mixes all of them.
+    exercise_mode: Mapped[CardType | None] = mapped_column(
+        Enum(CardType, name="card_type", values_callable=lambda e: [m.value for m in e])
+    )
     # Highest word id answered in /check ("know" or "learn"); the next pass continues after it.
     check_cursor: Mapped[int | None] = mapped_column(Integer)
     username: Mapped[str | None] = mapped_column(String(64))

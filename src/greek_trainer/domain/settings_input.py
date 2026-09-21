@@ -1,6 +1,7 @@
 """Parsing of `/settings` arguments (typed text or a settings-menu button).
 
-Keyword form: `words 30|off`, `budget 200`, `remind 19:30|off`, `tz Europe/Moscow`.
+Keyword form: `words 30|off`, `budget 200`, `remind 19:30|off`, `tz Europe/Moscow`,
+`mode recognition|recall|cloze|all`.
 Bare forms kept for convenience: a number sets words, HH:MM sets the reminder,
 `off` turns reminders off.
 """
@@ -16,9 +17,20 @@ from greek_trainer.errors import ParseError
 WORDS_RANGE = range(1, 201)
 BUDGET_RANGE = range(20, 1001)
 _OFF = ("off", "выкл", "нет")
+_ALL = ("all", "всё", "все", "микс")
+# The exercise names as the learner may type them, mapped to the card type.
+MODES = {
+    "recognition": "recognition",
+    "узнавание": "recognition",
+    "recall": "recall",
+    "письмо": "recall",
+    "cloze": "cloze",
+    "пропуск": "cloze",
+}
 _HINT = (
     "Примеры: /settings words 30, /settings words off, /settings budget 200, "
-    "/settings remind 19:30, /settings remind off, /settings tz Europe/Moscow."
+    "/settings remind 19:30, /settings remind off, /settings tz Europe/Moscow, "
+    "/settings mode recall."
 )
 
 
@@ -30,6 +42,8 @@ class SettingsChange:
     reminder_time: time | None = None
     reminders_off: bool = False
     timezone: str | None = None
+    exercise_mode: str | None = None
+    all_modes: bool = False
 
 
 def _number(token: str, allowed: range, what: str) -> int:
@@ -77,6 +91,16 @@ def parse_settings(args: str) -> SettingsChange:
                 change = replace(change, reminders_off=True)
             else:
                 change = replace(change, reminder_time=_clock(value))
+        elif key in ("mode", "режим") and tokens:
+            value = tokens.pop(0).lower()
+            if value in _ALL:
+                change = replace(change, all_modes=True)
+            elif value in MODES:
+                change = replace(change, exercise_mode=MODES[value])
+            else:
+                raise ParseError(
+                    f"Не знаю режим «{value}». Есть recognition, recall, cloze и all."
+                )
         elif key in ("tz", "пояс") and tokens:
             change = replace(change, timezone=_zone(tokens.pop(0)))
         elif token.isdecimal():

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from greek_trainer.config import Settings
 from greek_trainer.db.models import Card, CardType, ReviewLog, User, Word
+from greek_trainer.domain.settings_input import parse_settings
 from greek_trainer.domain.srs import build_scheduler, learning_day_start
 from greek_trainer.domain.word_input import parse_word
 from greek_trainer.errors import DuplicateWordError
@@ -15,6 +16,7 @@ from greek_trainer.services import (
     MIN_REPEAT_GAP,
     STRUGGLE_AGAIN,
     add_word,
+    apply_settings,
     deal_missing_cards,
     get_or_create_user,
     get_pace,
@@ -348,3 +350,36 @@ async def test_second_day_cards_of_a_started_word_do_not_spend_the_ceiling(
     await session.flush()
     new_word = await next_card(session, user, tomorrow)
     assert new_word is not None and new_word.word.lemma == "όχι"
+
+
+async def test_a_chosen_mode_serves_only_its_exercise(
+    session: AsyncSession, user: User
+) -> None:
+    await _add(session, user, XERO)
+    user.exercise_mode = CardType.RECALL
+
+    card = await next_card(session, user, NOW)
+    assert card is not None and card.card_type is CardType.RECALL
+    record_review(session, SCHEDULER, card, fsrs.Rating.Again, NOW)
+    await session.flush()
+
+    # Its siblings stay out of the way, in this mode and in the gap logic.
+    later = NOW + MIN_REPEAT_GAP + timedelta(seconds=1)
+    again = await next_card(session, user, later)
+    assert again is not None and again.id == card.id
+    assert (
+        await repeat_gap_ends_at(session, user, NOW + timedelta(seconds=10)) == card.due
+    )
+
+    user.exercise_mode = None
+    mixed = await next_card(session, user, later)
+    assert mixed is not None and mixed.card_type is CardType.RECALL
+
+
+async def test_switching_the_mode_is_one_setting(
+    session: AsyncSession, user: User
+) -> None:
+    apply_settings(user, parse_settings("mode cloze"), NOW)
+    assert user.exercise_mode is CardType.CLOZE
+    apply_settings(user, parse_settings("mode all"), NOW)
+    assert user.exercise_mode is None
