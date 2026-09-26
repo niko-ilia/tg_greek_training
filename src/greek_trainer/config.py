@@ -46,4 +46,4 @@ class Settings(DatabaseSettings):
 
 
 def load_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    return Settings()  # type: ignore[call-arg]  # required fields come from the env

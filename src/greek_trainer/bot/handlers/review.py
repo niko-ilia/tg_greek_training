@@ -387,8 +387,8 @@ async def typed_answer(
 ) -> None:
     assert message.text is not None
     data = await state.get_data()
-    # State and data are written separately, so the state may name a card the
-    # data does not carry yet.
+    # State and data are separate writes, so a concurrent update can leave this
+    # state with data that carries no card.
     card_id = data.get("card_id")
     card = None if card_id is None else await get_card(session, user, card_id)
     if card is None or card.version != data.get("version"):

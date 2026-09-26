@@ -184,7 +184,7 @@ MIN_REPEAT_GAP = timedelta(minutes=3)
 # How far ahead the review forecast looks. A new card rated Good returns in 2-3
 # days, so a forecast of tomorrow alone would not see the load it creates.
 FORECAST_DAYS = 7
-# "Struggling" = at least this many of the last STRUGGLE_WINDOW cards answered
+# "Struggling" = at least STRUGGLE_AGAIN of the last STRUGGLE_WINDOW cards answered
 # today on words started on earlier days ended on "Забыл"; forgetting a word met
 # today, however many times, is just learning it.
 STRUGGLE_WINDOW = 10

@@ -55,7 +55,7 @@ class User(Base):
     reminder_time: Mapped[time | None] = mapped_column(Time)
     # Ceiling on brand-new words per learning day; None means no ceiling.
     daily_new_words: Mapped[int | None] = mapped_column(Integer)
-    # New words stop while the forecast peak of daily reviews reaches this.
+    # New cards stop while the forecast peak of daily reviews reaches this.
     daily_review_budget: Mapped[int] = mapped_column(Integer, server_default="150")
     # "Всё равно дальше": the pacing brakes are off for this learning day.
     pace_override_on: Mapped[date | None] = mapped_column(Date)
