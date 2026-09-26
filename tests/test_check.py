@@ -55,6 +55,6 @@ async def test_check_walks_unseen_words_and_spares_the_daily_limit(
     assert await next_unchecked_word(session, user) is None
     assert (await get_stats(session, user, NOW)).reviewed_today == 0
 
-    # Triage did not spend today's new-card budget: όχι still comes as new.
+    # Triage did not use up the day's one new word: όχι still comes as new.
     card = await next_card(session, user, NOW)
     assert card is not None and card.word_id == second.id and card.last_review is None

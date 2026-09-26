@@ -176,7 +176,7 @@ class ReviewLog(Base):
     # FSRS state before this answer; None means the card was seen for the first time.
     state_before: Mapped[int | None] = mapped_column(SmallInteger)
     answer_text: Mapped[str | None] = mapped_column(Text)
-    # "I already know this word" from /check; excluded from the daily new-card limit.
+    # "I already know this word" from /check; excluded from the daily new-word limit.
     is_triage: Mapped[bool] = mapped_column(Boolean, server_default=false())
 
 

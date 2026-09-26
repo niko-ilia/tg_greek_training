@@ -14,5 +14,4 @@ def test_admin_ids_come_from_either_env_name(
 def test_no_admins_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ADMIN_TELEGRAM_IDS", raising=False)
     monkeypatch.delenv("ALLOWED_TELEGRAM_IDS", raising=False)
-    no_env_file = Settings(bot_token="t", _env_file=None)  # type: ignore[call-arg]  # pydantic-settings init kwarg
-    assert no_env_file.admin_telegram_ids == frozenset()
+    assert Settings(bot_token="t", _env_file=None).admin_telegram_ids == frozenset()  # type: ignore[call-arg]  # _env_file is a pydantic-settings init kwarg
